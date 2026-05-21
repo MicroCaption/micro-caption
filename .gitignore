@@ -4,8 +4,8 @@ __pycache__/
 *.pyo
 .venv/
 
-# Runtime logs (generated output, not source)
-logs/*.jsonl
+# Python bytecode only — keep logs and docs
+
 
 # Claude Code local settings
 .claude/settings.local.json
