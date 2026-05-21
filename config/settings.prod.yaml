@@ -1,0 +1,61 @@
+# Production-mode template — ready for DeckLink Phase 2
+# Switch to this config when the DeckLink card arrives and the SDK is installed.
+#
+# Usage:  MC_CONFIG=config/settings.prod.yaml python main.py
+
+mode: production
+
+io:
+  adapter: decklink   # ← change from alsa to decklink
+  decklink:
+    device_index: 0
+    input_connection: sdi
+    audio_channels: 2
+    audio_sample_depth: 32   # bits
+
+asr:
+  primary: parakeet
+  chunk_duration: 2.0
+  step_duration: 0.5
+  max_latency_ms: 2000
+  vad_rms_threshold: 5.0e-5   # tighter threshold for studio mic conditions
+  vad_hangover_frames: 8
+  latency_window: 100
+
+  parakeet:
+    model: nvidia/parakeet-tdt_ctc-0.6b
+    device: cuda
+
+  whisper:
+    model: large-v3-turbo
+    device: cuda
+    compute_type: float16
+
+caption:
+  normalizer:
+    max_line_length: 32
+    max_lines: 2
+  packetizer:
+    rollup_rows: 2
+    channel: 1
+    service: 1
+  packet_log:
+    log_608: logs/cea608.jsonl
+    log_708: logs/cea708.jsonl
+    format: json   # json-only in production (no verbose hex dumps)
+
+output:
+  terminal:
+    enabled: true
+    show_timestamps: true
+    show_backend: false   # cleaner output in production
+  webvtt:
+    enabled: true
+    host: 0.0.0.0
+    port: 8765
+  packet_log:
+    enabled: true
+    verbose: false
+
+monitor:
+  report_interval: 60

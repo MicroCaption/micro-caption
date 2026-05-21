@@ -1,0 +1,32 @@
+# Test-mode overrides — extends settings.yaml
+# Use when: developing without ASR models (fast iteration on I/O and packet layers)
+#
+# Usage:  MC_CONFIG=config/settings.test.yaml python main.py --mock-asr
+
+mode: test
+
+io:
+  adapter: alsa
+  alsa:
+    device: default
+
+asr:
+  primary: parakeet
+  chunk_duration: 1.0   # shorter window for faster test feedback
+  step_duration: 0.5
+  max_latency_ms: 5000  # relaxed threshold for CPU-only testing
+
+output:
+  terminal:
+    enabled: true
+    show_timestamps: true
+    show_backend: true
+  webvtt:
+    enabled: true
+    port: 8765
+  packet_log:
+    enabled: true
+    verbose: true   # print hex dumps to terminal during testing
+
+monitor:
+  report_interval: 10

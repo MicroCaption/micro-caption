@@ -1,0 +1,21 @@
+# MicroCaption CTA-708 — Python dependencies
+#
+# GStreamer python bindings (python3-gi) are installed via apt, NOT pip.
+# They are accessed via --system-site-packages in the venv.
+#
+# Install order matters for Python 3.14 — see setup.sh.
+
+# PyTorch (installed via setup.sh with CUDA 12.8 wheel index, not from here)
+# torch
+# torchaudio
+
+# ASR — primary
+nemo_toolkit[asr]
+
+# ASR — fallback (ctranslate2 may need a cp314 wheel; install separately if this fails)
+faster-whisper
+
+# Config
+pyyaml>=6.0
+
+# YAML-based config loading only; no heavy deps required for caption/packet layer

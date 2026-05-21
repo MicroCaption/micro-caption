@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MicroCaption - YouTube Player</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #111;
+      color: #fff;
+      font: 1.4em/1.6 monospace;
+      min-height: 100vh;
+    }
+    #player-container {
+      position: relative;
+      width: 100%;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    #video {
+      width: 100%;
+      aspect-ratio: 16/9;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    #video iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+    #captions {
+      white-space: pre-wrap;
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 10px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.7));
+      font-size: 1.2em;
+      color: #fff;
+      text-shadow: 1px 1px 2px #000;
+      pointer-events: none;
+    }
+    #status {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      color: #888;
+      font-size: 0.8em;
+    }
+    /* CEA-608 style */
+    .ru { font-size: 1.4em; margin-bottom: 4px; }
+    .cr { margin-top: 1em; }
+    .text { margin-bottom: 0.4em; }
+  </style>
+</head>
+<body>
+  <div id="status">Loading...</div>
+  <div id="player-container">
+    <div id="video"></div>
+    <div id="captions"></div>
+  </div>
+
+  <script>
+    // Get stream URL from config (passed via URL parameter)
+    const streamUrl = new URLSearchParams(window.location.search).get('url');
+
+    if (!streamUrl) {
+      document.getElementById('status').textContent = 'No YouTube URL specified.';
+      document.getElementById('status').style.color = '#f55';
+    } else {
+      document.getElementById('status').textContent = 'YouTube stream ready';
+
+      // Create YouTube embed
+      const videoId = streamUrl.split('v=')[1]?.split('&')[0] || '';
+      const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1`;
+
+      document.getElementById('video').innerHTML = `
+        <iframe src="${embedUrl}" allowfullscreen allow="autoplay; encrypted-media"></iframe>
+      `;
+
+      // Load captions from WebVTT server
+      const captionEndpoint = window.location.origin + '/events';
+
+      console.log('Caption endpoint:', captionEndpoint);
+
+      // Subscribe to caption events
+      if (window.EventSource) {
+        const es = new EventSource(captionEndpoint);
+        es.addEventListener('cue', e => {
+          const d = JSON.parse(e.data);
+          const div = document.getElementById('captions');
+
+          // Clear and show caption
+          div.innerHTML = '';
+
+          if (!d.lines || !d.lines.length) {
+            // Empty caption
+            return;
+          }
+
+          // Create CEA-608 style elements
+          d.lines.forEach((line, idx) => {
+            if (idx === 0) {
+              const ru = document.createElement('div');
+              ru.className = 'ru';
+              ru.textContent = line;
+              div.appendChild(ru);
+            } else if (idx === 1) {
+              const cr = document.createElement('div');
+              cr.className = 'cr';
+              cr.innerHTML = line;
+              div.appendChild(cr);
+            }
+          });
+        });
+      }
+    }
+  </script>
+</body>
+</html>

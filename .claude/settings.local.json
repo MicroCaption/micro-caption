@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gst-inspect-1.0 --version)",
+      "Bash(python3 -c \"import gi; print\\('gi ok'\\)\")",
+      "Bash(gst-inspect-1.0 pulsesrc *)",
+      "Bash(chmod +x *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip3 install *)",
+      "Bash(apt list *)",
+      "Bash(apt-get update *)",
+      "Bash(apt-get install *)",
+      "Bash(pip install *)"
+    ]
+  }
+}

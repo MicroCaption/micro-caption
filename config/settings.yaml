@@ -1,0 +1,76 @@
+# MicroCaption — CTA-708 Real-Time Captioning System
+# Default configuration (test mode with ALSA/PulseAudio input)
+#
+# Override any value with an environment variable:
+#   MC_IO_ADAPTER=decklink  MC_OUTPUT_WEBVTT_PORT=9000  python main.py
+# Or point to a different config file:
+#   MC_CONFIG=config/settings.prod.yaml  python main.py
+
+mode: test   # test | production
+
+# ── I/O adapter ──────────────────────────────────────────────────────────────
+io:
+  adapter: alsa   # alsa | decklink   (swap here, not in code)
+  alsa:
+    device: default   # PulseAudio source name; 'default' = system default mic
+    # To list available devices:  pactl list sources short
+    # Example:  device: alsa_input.pci-0000_00_1f.3.analog-stereo
+  decklink:
+    # Populated in Phase 2 when hardware is available
+    device_index: 0
+    input_connection: sdi   # sdi | hdmi | component
+
+# ── ASR engine ───────────────────────────────────────────────────────────────
+asr:
+  primary: whisper    # parakeet | whisper  (switch back to parakeet once nemo_toolkit is installed)
+  chunk_duration: 2.0   # seconds per inference window
+  step_duration: 0.5    # seconds to advance window per step (overlap = chunk - step)
+  max_latency_ms: 2000  # warn if inference exceeds this
+  vad_rms_threshold: 1.0e-4
+  vad_hangover_frames: 5
+  latency_window: 50    # rolling sample count for latency stats
+
+  parakeet:
+    model: nvidia/parakeet-tdt_ctc-0.6b
+    device: cuda
+
+  whisper:
+    model: large-v3-turbo   # swap to base.en for faster first-run download (~145 MB vs 1.6 GB)
+    device: cuda
+    compute_type: float16   # float16 | int8 | int8_float16
+
+# ── Caption processing ────────────────────────────────────────────────────────
+caption:
+  normalizer:
+    max_line_length: 32   # CEA-608 safe-title area standard
+    max_lines: 2          # roll-up mode: 2 visible rows
+
+  packetizer:
+    rollup_rows: 2
+    channel: 1
+    service: 1            # CEA-708 service 1 = primary English
+
+  packet_log:
+    log_608: logs/cea608.jsonl
+    log_708: logs/cea708.jsonl
+    format: both          # json | hex | both
+
+# ── Output sinks ─────────────────────────────────────────────────────────────
+output:
+  terminal:
+    enabled: true
+    show_timestamps: true
+    show_backend: true
+
+  webvtt:
+    enabled: true
+    host: 0.0.0.0
+    port: 8765
+
+  packet_log:
+    enabled: true
+    verbose: false   # if true, print hex dump to terminal as well as log file
+
+# ── Monitoring ────────────────────────────────────────────────────────────────
+monitor:
+  report_interval: 30   # seconds between periodic latency reports to stderr
