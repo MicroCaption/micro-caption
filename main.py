@@ -22,8 +22,20 @@ import signal
 import sys
 import threading
 import time
+import urllib.parse
 
 import yaml
+
+
+def _extract_video_id(url: str) -> str:
+    """Extract YouTube video ID from various URL formats."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname in ('youtu.be',):
+        return parsed.path.lstrip('/')
+    if parsed.hostname and 'youtube' in parsed.hostname:
+        vid = urllib.parse.parse_qs(parsed.query).get('v', [''])[0]
+        return vid
+    return ''
 
 
 def load_config(path: str) -> dict:
@@ -114,8 +126,9 @@ def main() -> None:
 
     webvtt_cfg    = cfg.get('output', {}).get('webvtt', {})
     webvtt_server = None
+    video_id = _extract_video_id(args.youtube) if args.youtube else ''
     if webvtt_cfg.get('enabled', True):
-        webvtt_server = WebVTTServer(webvtt_cfg, vtt_writer)
+        webvtt_server = WebVTTServer(webvtt_cfg, vtt_writer, video_id=video_id)
         webvtt_server.start()
 
     verbose_packets = cfg.get('output', {}).get('packet_log', {}).get('verbose', False)
@@ -188,7 +201,11 @@ def main() -> None:
     io_adapter.start()
     print('[Main] Pipeline running. Ctrl-C to stop.')
     if webvtt_server:
-        print(f'[Main] Open http://localhost:{webvtt_cfg.get("port", 8765)}/ in a browser')
+        port = webvtt_cfg.get('port', 8765)
+        if video_id:
+            print(f'[Main] Open http://localhost:{port}/ — YouTube video with live ASR captions')
+        else:
+            print(f'[Main] Open http://localhost:{port}/ — live caption stream')
 
     stop_event = threading.Event()
 

@@ -11,7 +11,19 @@
       "Bash(apt list *)",
       "Bash(apt-get update *)",
       "Bash(apt-get install *)",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(/home/peter/.local/share/Trash/files/MicroCaption/.venv/bin/python3 -c \"import faster_whisper; print\\('faster_whisper OK'\\)\")",
+      "Bash(/home/peter/.local/share/Trash/files/MicroCaption/.venv/bin/python3 -c \"import yt_dlp; print\\('yt_dlp OK'\\)\")",
+      "Bash(/home/peter/.local/share/Trash/files/MicroCaption/.venv/bin/python3 -c \"import gi; gi.require_version\\('Gst','1.0'\\); from gi.repository import Gst; print\\('GStreamer OK'\\)\")",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/python3 -c \"import faster_whisper; print\\('faster_whisper OK'\\)\")",
+      "Bash(.venv/bin/python3 -c \"import yt_dlp; print\\('yt_dlp OK'\\)\")",
+      "Bash(.venv/bin/python3 -c \"import gi; gi.require_version\\('Gst','1.0'\\); from gi.repository import Gst; print\\('GStreamer OK'\\)\")",
+      "Bash(.venv/bin/python3 -c \"import yaml; print\\('pyyaml OK'\\)\")",
+      "Bash(.venv/bin/python3 -m unittest tests.test_packetizer tests.test_normalizer tests.test_wer -v)",
+      "Bash(timeout 6 .venv/bin/python3 main.py --mock-asr)",
+      "Bash(timeout 8 .venv/bin/python3 main.py --mock-asr --youtube \"https://www.youtube.com/watch?v=aicFjagp2BE\")",
+      "Bash(.venv/bin/python3 *)"
     ]
   }
 }
