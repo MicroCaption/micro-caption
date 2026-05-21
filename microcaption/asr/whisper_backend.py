@@ -13,9 +13,22 @@ class WhisperBackend:
         self._model = None
 
     def load(self) -> None:
+        import glob
+        import os
         from faster_whisper import WhisperModel  # type: ignore
+        # Search the HF hub cache for any snapshot dir matching this model name so
+        # we load from disk and skip the network check entirely.
+        cache_dir = os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')
+        model_key = self._model_size.replace('/', '--')
+        pattern = os.path.join(cache_dir, f'*{model_key}*', 'snapshots', '*')
+        matches = sorted(glob.glob(pattern))
+        if matches:
+            model_path = matches[-1]
+            print(f'[Whisper] Using cached model at {model_path}')
+        else:
+            model_path = self._model_size
         self._model = WhisperModel(
-            self._model_size,
+            model_path,
             device=self._device,
             compute_type=self._compute_type,
         )

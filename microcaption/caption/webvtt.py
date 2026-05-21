@@ -54,6 +54,11 @@ class WebVTTWriter:
         """Return cues added after the given 1-based index."""
         return self._cues[index - 1:] if index <= len(self._cues) else []
 
+    def reset(self) -> None:
+        """Clear all cues — call when starting a new video session."""
+        self._cues = []
+        self._cue_index = 1
+
     @property
     def cue_count(self) -> int:
         return len(self._cues)

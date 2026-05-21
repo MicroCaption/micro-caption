@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# Runtime logs (generated output, not source)
+logs/*.jsonl
+
+# Claude Code local settings
+.claude/settings.local.json

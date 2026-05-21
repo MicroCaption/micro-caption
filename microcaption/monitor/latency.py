@@ -53,6 +53,8 @@ class LatencyMonitor:
         mean = self.mean_ms
         p95 = self.p95_ms
         mx = self.max_ms
+        if mean is None:
+            return f'ASR latency — no samples yet (total: {self._count})'
         ips = self.inferences_per_second
         return (
             f'ASR latency — mean: {mean:.0f} ms, p95: {p95:.0f} ms, '
