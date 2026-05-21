@@ -23,7 +23,24 @@
       "Bash(.venv/bin/python3 -m unittest tests.test_packetizer tests.test_normalizer tests.test_wer -v)",
       "Bash(timeout 6 .venv/bin/python3 main.py --mock-asr)",
       "Bash(timeout 8 .venv/bin/python3 main.py --mock-asr --youtube \"https://www.youtube.com/watch?v=aicFjagp2BE\")",
-      "Bash(.venv/bin/python3 *)"
+      "Bash(.venv/bin/python3 *)",
+      "Bash(pkill -f \"python3 main.py\")",
+      "Bash(.venv/bin/python3 main.py --youtube \"https://www.youtube.com/watch?v=aicFjagp2BE\")",
+      "Bash(echo \"PID: $!\")",
+      "Bash(curl -s http://localhost:8765/webvtt)",
+      "Bash(kill 51071)",
+      "Bash(ldconfig -p)",
+      "Bash(tailscale status *)",
+      "Bash(tailscale funnel *)",
+      "Bash(curl -sk https://microcap-proto.tail737e71.ts.net/)",
+      "Bash(./run.sh --youtube \"https://www.youtube.com/watch?v=aicFjagp2BE\")",
+      "Bash(fuser -k 8765/tcp)",
+      "Bash(fuser 8765/tcp)",
+      "Bash(curl -sv --max-time 10 https://microcap-proto.tail737e71.ts.net/)",
+      "Bash(curl -s --max-time 10 https://microcap-proto.tail737e71.ts.net/)",
+      "Bash(curl -s --max-time 5 http://localhost:8765/)",
+      "Bash(./run.sh)",
+      "Bash(curl -s http://localhost:8765/)"
     ]
   }
 }
