@@ -254,6 +254,7 @@ def _make_player_html(video_id: str) -> str:
     #footer a {{ color: #333; text-decoration: none; }}
     #footer a:hover {{ color: #666; }}
   </style>
+  <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 <body>
   <div id="topbar">
@@ -266,8 +267,8 @@ def _make_player_html(video_id: str) -> str:
     </div>
   </div>
   <div id="player-wrap">
-    <iframe
-      src="https://www.youtube.com/embed/{video_id}?autoplay=1&mute=0"
+    <iframe id="yt-iframe"
+      src="https://www.youtube.com/embed/{video_id}?autoplay=1&mute=0&enablejsapi=1"
       allow="autoplay; encrypted-media; picture-in-picture"
       allowfullscreen>
     </iframe>
@@ -301,6 +302,32 @@ def _make_player_html(video_id: str) -> str:
     let lastRenderTime = 0;   // Date.now() of the last screen update
     let renderTimer   = null; // handle for the deferred-update setTimeout
     let clearTimer    = null; // handle for the silence-dwell setTimeout
+    let videoPaused   = false;
+
+    // ── YouTube IFrame API ────────────────────────────────────────────────
+    // Wraps the existing iframe once the API script has loaded.
+    // On pause: freeze captions in place (cancel clear/render timers, drop
+    // incoming cues). On resume: accept new cues normally.
+    let ytPlayer;
+    function onYouTubeIframeAPIReady() {{
+      ytPlayer = new YT.Player('yt-iframe', {{
+        events: {{ onStateChange: onPlayerStateChange }}
+      }});
+    }}
+    function onPlayerStateChange(event) {{
+      if (event.data === YT.PlayerState.PAUSED ||
+          event.data === YT.PlayerState.BUFFERING) {{
+        videoPaused = true;
+        if (clearTimer)  {{ clearTimeout(clearTimer);  clearTimer  = null; }}
+        if (renderTimer) {{ clearTimeout(renderTimer); renderTimer = null; }}
+        status.textContent = 'Paused';
+        status.className   = 'waiting';
+      }} else if (event.data === YT.PlayerState.PLAYING) {{
+        videoPaused = false;
+        status.textContent = 'Connected — waiting for speech…';
+        status.className   = 'waiting';
+      }}
+    }}
 
     const DWELL_MS      = 5000;  // clear after 5 s of silence
     const MIN_STABLE_MS = 2000;  // minimum hold per screen (BBC/Netflix standard)
@@ -381,6 +408,7 @@ def _make_player_html(video_id: str) -> str:
     const es = new EventSource('/events');
 
     es.addEventListener('cue', e => {{
+      if (videoPaused) return;   // freeze: drop cues while video is paused
       const d = JSON.parse(e.data);
       status.textContent = 'LIVE';
       status.className = 'live';
