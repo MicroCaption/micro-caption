@@ -13,9 +13,10 @@ import json
 import threading
 import time
 import urllib.parse
+from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from typing import Callable, List, Optional
+from typing import Callable, Deque, Dict, List, Optional
 from ..caption.webvtt import WebVTTWriter
 
 
@@ -33,6 +34,103 @@ def _video_id_from_url(url: str) -> str:
         if len(parts) >= 2 and parts[0] in ('shorts', 'live', 'embed'):
             return parts[1]
     return ''
+
+
+# ── Shared UI helpers ─────────────────────────────────────────────────────────
+
+_SHARED_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0d0d0d; color: #ddd; font-family: monospace; min-height: 100vh; }
+nav {
+  display: flex; align-items: center; gap: 2px;
+  padding: 11px 20px; border-bottom: 1px solid #181818;
+}
+.nav-logo {
+  color: #3a3a3a; letter-spacing: 0.14em; text-transform: uppercase;
+  font-size: 0.8em; margin-right: auto;
+}
+.nav-link {
+  color: #555; text-decoration: none; padding: 5px 11px;
+  border-radius: 4px; font-size: 0.8em; transition: color .15s;
+}
+.nav-link:hover { color: #aaa; }
+.nav-link.active { color: #ddd; background: #181818; }
+.nav-live {
+  color: #3a9a4a; text-decoration: none; padding: 5px 11px;
+  font-size: 0.8em; margin-left: 6px;
+  animation: blink 1.4s ease-in-out infinite;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.45} }
+main { max-width: 1080px; margin: 0 auto; padding: 26px 20px; }
+h2 {
+  color: #444; font-size: 0.68em; letter-spacing: 0.12em;
+  text-transform: uppercase; margin-bottom: 10px;
+}
+.card {
+  background: #0f0f0f; border: 1px solid #1c1c1c;
+  border-radius: 5px; padding: 18px 22px; margin-bottom: 14px;
+}
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+.stat-label { color: #383838; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.08em; }
+.stat-val { color: #ccc; font-size: 1.05em; margin-top: 5px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.dot-live { background: #3a9a4a; animation: blink 1.4s infinite; }
+.dot-idle { background: #2a2a2a; }
+.live { color: #3a9a4a; }
+.idle { color: #444; }
+.stub { color: #2a2a2a; font-style: italic; font-size: 0.85em; }
+table { width: 100%; border-collapse: collapse; font-size: 0.83em; }
+td, th { padding: 7px 10px; border-bottom: 1px solid #161616; }
+th { color: #383838; font-weight: normal; text-transform: uppercase; font-size: 0.7em; letter-spacing: 0.07em; }
+td:first-child { color: #666; }
+pre {
+  background: #080808; border: 1px solid #1c1c1c; border-radius: 4px;
+  padding: 16px; overflow-x: auto; font-size: 0.8em; color: #7a9a7a; line-height: 1.65;
+}
+form.row { display: flex; gap: 10px; }
+input[type=url] {
+  flex: 1; padding: 10px 14px; background: #141414; border: 1px solid #242424;
+  border-radius: 5px; color: #eee; font-family: monospace; font-size: 0.9em; outline: none;
+}
+input[type=url]:focus { border-color: #3a6a3a; }
+input[type=url]::placeholder { color: #2c2c2c; }
+.btn-primary {
+  padding: 10px 22px; background: #2a7a3a; border: none; border-radius: 5px;
+  color: #fff; font-family: monospace; font-size: 0.9em; cursor: pointer; white-space: nowrap;
+}
+.btn-primary:hover { background: #3a9a4a; }
+.btn-danger {
+  background: none; border: 1px solid #4a1a1a; color: #744;
+  font-family: monospace; font-size: 0.82em; padding: 6px 14px;
+  border-radius: 4px; cursor: pointer;
+}
+.btn-danger:hover { border-color: #944; color: #b66; }
+.ts { color: #2a2a2a; font-size: 0.72em; }
+"""
+
+
+def _nav(active: str, session_active: bool) -> str:
+    tabs = [('Dashboard', '/dashboard'), ('Monitor', '/monitor'),
+            ('Config', '/config'), ('Logs', '/logs')]
+    links = ''.join(
+        f'<a href="{h}" class="nav-link{"  active" if lbl.lower() == active else ""}">{lbl}</a>'
+        for lbl, h in tabs
+    )
+    live = ('<a href="/player" class="nav-live">&#9654;&nbsp;Live</a>'
+            if session_active else '')
+    return (f'<nav><span class="nav-logo">MicroCaption</span>'
+            f'{links}{live}</nav>')
+
+
+def _wrap(title: str, active: str, body: str,
+          session_active: bool = False, script: str = '') -> str:
+    st = f'<script>{script}</script>' if script else ''
+    return (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<title>MicroCaption — {title}</title>'
+            f'<style>{_SHARED_CSS}</style></head><body>'
+            f'{_nav(active, session_active)}'
+            f'<main>{body}</main>{st}</body></html>')
 
 
 # ── Landing page ──────────────────────────────────────────────────────────────
@@ -326,6 +424,11 @@ class _Handler(BaseHTTPRequestHandler):
     stop_callback: Optional[Callable[[], None]] = None
     _sse_clients: List = []
     _sse_lock: threading.Lock = None
+    # dashboard / monitoring
+    metrics_provider: Optional[Callable[[], Dict]] = None
+    config_snapshot: Dict = {}
+    _recent_cues: Deque = deque(maxlen=50)
+    _session_start: Optional[float] = None   # monotonic timestamp
 
     def log_message(self, fmt, *args):
         pass
@@ -358,6 +461,20 @@ class _Handler(BaseHTTPRequestHandler):
             })
             self._send(payload.encode(), 'application/json')
 
+        elif self.path == '/dashboard':
+            self._send(self._page_dashboard().encode(), 'text/html')
+        elif self.path == '/monitor':
+            self._send(self._page_monitor().encode(), 'text/html')
+        elif self.path == '/config':
+            self._send(self._page_config().encode(), 'text/html')
+        elif self.path == '/logs':
+            self._send(self._page_logs().encode(), 'text/html')
+        elif self.path == '/api/metrics':
+            self._send(self._build_metrics_json().encode(), 'application/json')
+        elif self.path == '/api/config':
+            self._send(json.dumps(self.config_snapshot, indent=2).encode(),
+                       'application/json')
+
         else:
             self.send_error(404)
 
@@ -375,6 +492,7 @@ class _Handler(BaseHTTPRequestHandler):
                 # correctly before the background thread finishes yt-dlp.
                 _Handler.video_id = _video_id_from_url(url)
                 _Handler.session_active = True
+                _Handler._session_start = time.monotonic()
 
                 # Access via class, not self — prevents Python binding the
                 # function as an instance method and adding a spurious argument.
@@ -397,12 +515,196 @@ class _Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=cb, daemon=True, name='session-stop').start()
             _Handler.video_id = ''
             _Handler.session_active = False
+            _Handler._session_start = None
             self.send_response(303)
             self.send_header('Location', '/')
             self.send_header('Content-Length', '0')
             self.end_headers()
         else:
             self.send_error(405)
+
+    # ── dashboard pages ───────────────────────────────────────────────────────
+
+    def _page_dashboard(self) -> str:
+        if self.session_active:
+            vid_url = f'https://youtube.com/watch?v={self.video_id}' if self.video_id else '—'
+            session_block = (
+                f'<div class="card">'
+                f'<span class="dot dot-live"></span>'
+                f'<span class="live">Session active</span>'
+                f'&nbsp;&nbsp;'
+                f'<span style="color:#555;font-size:.85em">{vid_url}</span>'
+                f'&nbsp;&nbsp;'
+                f'<a href="/player" style="color:#4c4;font-size:.85em;text-decoration:none">'
+                f'&#9654;&nbsp;Watch live &rarr;</a>'
+                f'&nbsp;&nbsp;'
+                f'<form method="POST" action="/stop" style="display:inline;margin:0">'
+                f'<button class="btn-danger" type="submit">&#9632; Stop</button>'
+                f'</form>'
+                f'</div>'
+            )
+        else:
+            session_block = (
+                '<div class="card">'
+                '<span class="dot dot-idle"></span>'
+                '<span class="idle">No active session</span>'
+                '</div>'
+            )
+
+        cue_count = self.writer.cue_count if self.writer else 0
+        backend = self.config_snapshot.get('asr', {}).get('primary', '—')
+
+        body = (
+            f'<h2>Session</h2>{session_block}'
+            f'<h2>New session</h2>'
+            f'<div class="card">'
+            f'<form class="row" method="POST" action="/start">'
+            f'<input type="url" name="url" placeholder="https://www.youtube.com/watch?v=…" required autofocus>'
+            f'<button class="btn-primary" type="submit">&#9654;&nbsp;Caption</button>'
+            f'</form>'
+            f'</div>'
+            f'<h2>Quick stats</h2>'
+            f'<div class="card grid3">'
+            f'<div><div class="stat-label">Cues generated</div>'
+            f'<div class="stat-val" id="qs-cues">{cue_count}</div></div>'
+            f'<div><div class="stat-label">ASR backend</div>'
+            f'<div class="stat-val">{backend}</div></div>'
+            f'<div><div class="stat-label">Session uptime</div>'
+            f'<div class="stat-val" id="qs-uptime">—</div></div>'
+            f'</div>'
+        )
+        script = (
+            'async function poll(){'
+            'try{'
+            'const d=await(await fetch("/api/metrics")).json();'
+            'const g=id=>document.getElementById(id);'
+            'if(g("qs-cues"))g("qs-cues").textContent=d.captions?.cue_count??"—";'
+            'const s=d.session?.uptime_s;'
+            'if(g("qs-uptime")&&s!=null){'
+            'const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60);'
+            'g("qs-uptime").textContent='
+            'String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(sc).padStart(2,"0");'
+            '}}catch(e){}}'
+            'poll();setInterval(poll,3000);'
+        )
+        return _wrap('Dashboard', 'dashboard', body, self.session_active, script)
+
+    def _page_monitor(self) -> str:
+        body = (
+            '<div class="grid2">'
+            '<div><h2>ASR Latency</h2><div class="card">'
+            '<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>'
+            '<tr><td>Mean</td><td id="lat-mean">—</td></tr>'
+            '<tr><td>p95</td><td id="lat-p95">—</td></tr>'
+            '<tr><td>Max</td><td id="lat-max">—</td></tr>'
+            '<tr><td>Rate</td><td id="lat-rate">—</td></tr>'
+            '<tr><td>Total inferences</td><td id="lat-total">—</td></tr>'
+            '</tbody></table></div></div>'
+            '<div><h2>Session</h2><div class="card">'
+            '<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>'
+            '<tr><td>Status</td><td id="mon-status">—</td></tr>'
+            '<tr><td>Uptime</td><td id="mon-uptime">—</td></tr>'
+            '<tr><td>Cues generated</td><td id="mon-cues">—</td></tr>'
+            '<tr><td>ASR backend</td><td id="mon-backend">—</td></tr>'
+            '</tbody></table></div></div>'
+            '</div>'
+            '<h2>System</h2>'
+            '<div class="card grid3">'
+            '<div><div class="stat-label">GPU utilisation</div>'
+            '<div class="stat-val stub">Phase 2</div></div>'
+            '<div><div class="stat-label">CPU utilisation</div>'
+            '<div class="stat-val stub">Phase 2</div></div>'
+            '<div><div class="stat-label">VRAM used</div>'
+            '<div class="stat-val stub">Phase 2</div></div>'
+            '</div>'
+            '<p class="ts" id="refresh-ts" style="margin-top:8px">'
+            'Refreshing every 2 s…</p>'
+        )
+        script = (
+            'function fms(v){return v==null?"—":v.toFixed(0)+" ms";}'
+            'function fup(s){'
+            'if(s==null)return "—";'
+            'const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60);'
+            'return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(sc).padStart(2,"0");'
+            '}'
+            'async function refresh(){'
+            'try{'
+            'const d=await(await fetch("/api/metrics")).json();'
+            'const id=s=>document.getElementById(s);'
+            'id("lat-mean").textContent=fms(d.asr?.mean_ms);'
+            'id("lat-p95").textContent=fms(d.asr?.p95_ms);'
+            'id("lat-max").textContent=fms(d.asr?.max_ms);'
+            'id("lat-rate").textContent=d.asr?.rate!=null?d.asr.rate.toFixed(2)+"/s":"—";'
+            'id("lat-total").textContent=d.asr?.total??"—";'
+            'id("mon-status").textContent=d.session?.active?"Active":"Idle";'
+            'id("mon-status").style.color=d.session?.active?"#3a9a4a":"#444";'
+            'id("mon-uptime").textContent=fup(d.session?.uptime_s);'
+            'id("mon-cues").textContent=d.captions?.cue_count??"—";'
+            'id("mon-backend").textContent=d.asr?.backend??"—";'
+            'id("refresh-ts").textContent="Last update: "+new Date().toLocaleTimeString();'
+            '}catch(e){}}'
+            'refresh();setInterval(refresh,2000);'
+        )
+        return _wrap('Monitor', 'monitor', body, self.session_active, script)
+
+    def _page_config(self) -> str:
+        cfg_json = json.dumps(self.config_snapshot, indent=2)
+        body = (
+            '<h2>Active configuration</h2>'
+            f'<div class="card"><pre>{cfg_json}</pre></div>'
+            '<p class="stub" style="margin-top:6px">'
+            'Per-field editing and hot-reload — Phase 2</p>'
+        )
+        return _wrap('Config', 'config', body, self.session_active)
+
+    def _page_logs(self) -> str:
+        rows = ''.join(
+            f'<tr><td class="ts">{c["ts"]}</td><td>{c["text"]}</td></tr>'
+            for c in reversed(list(self._recent_cues))
+        ) or ('<tr><td colspan="2" class="stub">'
+               'No captions yet this session.</td></tr>')
+        body = (
+            '<h2>Recent captions</h2>'
+            '<div class="card">'
+            '<table><thead><tr><th>Time</th><th>Caption</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            '<p style="margin-top:8px;font-size:.75em">'
+            '<a href="/webvtt" style="color:#444">Download WebVTT</a>'
+            '&nbsp;&nbsp;<span class="stub">SRT / PDF export — Phase 2</span></p>'
+            '<h2 style="margin-top:20px">Packet logs</h2>'
+            '<div class="card"><p class="stub">'
+            'Live packet log viewer — Phase 2</p></div>'
+        )
+        return _wrap('Logs', 'logs', body, self.session_active)
+
+    # ── API endpoints ─────────────────────────────────────────────────────────
+
+    def _build_metrics_json(self) -> str:
+        asr: Dict = {}
+        provider = _Handler.metrics_provider  # access via class to avoid method binding
+        if provider:
+            try:
+                asr = provider()
+            except Exception:
+                pass
+
+        uptime = None
+        if self._session_start is not None:
+            uptime = time.monotonic() - self._session_start
+
+        payload = {
+            'session': {
+                'active': self.session_active,
+                'video_id': self.video_id,
+                'uptime_s': round(uptime, 1) if uptime is not None else None,
+            },
+            'asr': asr,
+            'captions': {
+                'cue_count': self.writer.cue_count if self.writer else 0,
+                'recent': list(self._recent_cues)[-10:],
+            },
+        }
+        return json.dumps(payload)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -461,7 +763,9 @@ class WebVTTServer:
     def __init__(self, config: dict, writer: WebVTTWriter,
                  video_id: str = '',
                  start_callback: Optional[Callable[[str], None]] = None,
-                 stop_callback: Optional[Callable[[], None]] = None) -> None:
+                 stop_callback: Optional[Callable[[], None]] = None,
+                 metrics_provider: Optional[Callable[[], Dict]] = None,
+                 config_snapshot: Optional[Dict] = None) -> None:
         self._host: str = config.get('host', '0.0.0.0')
         self._port: int = config.get('port', 8765)
         self._writer = writer
@@ -476,6 +780,9 @@ class WebVTTServer:
         _Handler.stop_callback = stop_callback
         _Handler._sse_clients = self._clients
         _Handler._sse_lock = self._lock
+        _Handler.metrics_provider = metrics_provider
+        _Handler.config_snapshot = config_snapshot or {}
+        _Handler._recent_cues = deque(maxlen=50)
 
     def set_video_id(self, video_id: str) -> None:
         _Handler.video_id = video_id
@@ -496,6 +803,10 @@ class WebVTTServer:
 
     def on_caption(self, text: str, start: float, end: float) -> None:
         self._writer.add_cue(text, start, end)
+        _Handler._recent_cues.append({
+            'ts': time.strftime('%H:%M:%S'),
+            'text': text,
+        })
         cue_json = json.dumps({
             'text': text,
             'lines': [l for l in text.split('\n') if l.strip()],

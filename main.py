@@ -203,6 +203,18 @@ def main() -> None:
         adapter.start()
 
     # ── WebVTT / web server ───────────────────────────────────────────────────
+    def _metrics_provider() -> dict:
+        m = asr_pipeline.latency_monitor if asr_pipeline else None
+        backend = cfg.get('asr', {}).get('primary', 'mock' if not asr_pipeline else '—')
+        return {
+            'backend': backend,
+            'mean_ms': m.mean_ms if m else None,
+            'p95_ms': m.p95_ms if m else None,
+            'max_ms': m.max_ms if m else None,
+            'rate': m.inferences_per_second if m else None,
+            'total': m.count if m else 0,
+        }
+
     webvtt_cfg = cfg.get('output', {}).get('webvtt', {})
     if webvtt_cfg.get('enabled', True):
         webvtt_server = WebVTTServer(
@@ -210,6 +222,8 @@ def main() -> None:
             vtt_writer,
             start_callback=start_session,
             stop_callback=stop_session,
+            metrics_provider=_metrics_provider,
+            config_snapshot=cfg,
         )
         webvtt_server.start()
         port = webvtt_cfg.get('port', 8765)
