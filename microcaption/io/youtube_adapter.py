@@ -78,17 +78,25 @@ class YouTubeAdapter(InputOutputManager):
 
     # ── internals ─────────────────────────────────────────────────────────────
 
-    def _resolve_cdn_url(self, youtube_url: str) -> str:
-        print(f'[YouTube] Resolving stream URL via yt-dlp…')
+    def _resolve_cdn_url(self, source_url: str) -> str:
+        print(f'[Stream] Resolving CDN URL via yt-dlp…')
         result = subprocess.run(
-            ['yt-dlp', '-g', '-f', 'bestaudio', '--no-playlist',
-             '--no-check-certificate', youtube_url],
-            capture_output=True, text=True, check=True,
+            ['yt-dlp', '-g',
+             '-f', 'bestaudio/best',   # bestaudio/best: audio-only if available,
+             '--no-playlist',           # otherwise best combined (e.g. HLS manifest)
+             '--no-check-certificate', source_url],
+            capture_output=True, text=True,
         )
-        # yt-dlp may return multiple lines (video + audio for DASH); take the last
-        # line which is the audio-only URL when -f bestaudio is used.
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            raise RuntimeError(
+                f'yt-dlp failed (exit {result.returncode}): {stderr}'
+            )
+        # yt-dlp may return multiple lines (DASH: video URL + audio URL).
+        # Last line is the audio URL when bestaudio is resolved; for HLS it is
+        # the single manifest URL.
         url = result.stdout.strip().split('\n')[-1]
-        print(f'[YouTube] CDN URL resolved ({len(url)} chars)')
+        print(f'[Stream] CDN URL resolved ({len(url)} chars)')
         return url
 
     def _build_pipeline(self, cdn_url: str) -> Gst.Pipeline:
