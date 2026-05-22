@@ -4,6 +4,9 @@ __pycache__/
 *.pyo
 .venv/
 
+# Runtime logs
+logs/
+
 # Python bytecode only — keep logs and docs
 
 
