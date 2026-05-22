@@ -79,6 +79,10 @@ class WhisperBackend:
             # hallucinated phrase from reinforcing itself across windows.
             condition_on_previous_text=False,
             no_speech_threshold=self._no_speech_threshold,
+            # Force single-pass inference. Without this, faster-whisper retries
+            # at higher temperatures when confidence is low, costing up to 6×
+            # the GPU time for noisy audio.
+            temperature=0,
         )
         parts = []
         for seg in segments:
