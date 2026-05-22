@@ -1,12 +1,20 @@
 """
 HTTP server — endpoints:
 
-  GET  /          — URL submission form (landing page)
-  POST /start     — accept YouTube URL, kick off new session, redirect to /player
-  GET  /player    — YouTube video + live caption overlay
-  GET  /events    — Server-Sent Events stream (pushed per caption)
-  GET  /webvtt    — full accumulated WebVTT document
-  GET  /status    — JSON: {active, video_id, cue_count}
+  GET  /                — Control room: all active sessions + add-stream form
+  GET  /player/<id>     — Per-session player page with live caption overlay
+  GET  /events/<id>     — Per-session Server-Sent Events stream
+  GET  /webvtt/<id>     — Per-session WebVTT download
+  POST /start           — Start new session (form redirect → /player/<id>)
+  POST /api/start       — Start new session (JSON response → {session_id})
+  POST /stop/<id>       — Stop one session
+  GET  /monitor         — Aggregate ASR latency + per-session table
+  GET  /config          — Active configuration viewer
+  GET  /logs            — Combined recent-caption log across all sessions
+  GET  /api/sessions    — All sessions as JSON
+  GET  /api/metrics     — Global metrics JSON
+  GET  /api/config      — Config JSON
+  GET  /status          — Backward-compat status JSON
 """
 
 import json
@@ -16,7 +24,8 @@ import urllib.parse
 from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from typing import Callable, Deque, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
+
 from ..caption.webvtt import WebVTTWriter
 
 
@@ -25,18 +34,21 @@ def _video_id_from_url(url: str) -> str:
     if parsed.hostname in ('youtu.be',):
         return parsed.path.lstrip('/').split('/')[0]
     if parsed.hostname and 'youtube' in parsed.hostname:
-        # standard ?v=ID query param
         vid = urllib.parse.parse_qs(parsed.query).get('v', [''])[0]
         if vid:
             return vid
-        # path-based formats: /shorts/ID, /live/ID, /embed/ID
         parts = [p for p in parsed.path.split('/') if p]
         if len(parts) >= 2 and parts[0] in ('shorts', 'live', 'embed'):
             return parts[1]
     return ''
 
 
-# ── Shared UI helpers ─────────────────────────────────────────────────────────
+def _esc(s: str) -> str:
+    return (s.replace('&', '&amp;').replace('<', '&lt;')
+             .replace('>', '&gt;').replace('"', '&quot;'))
+
+
+# ── Shared styles ─────────────────────────────────────────────────────────────
 
 _SHARED_CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -55,13 +67,7 @@ nav {
 }
 .nav-link:hover { color: #aaa; }
 .nav-link.active { color: #ddd; background: #181818; }
-.nav-live {
-  color: #3a9a4a; text-decoration: none; padding: 5px 11px;
-  font-size: 0.8em; margin-left: 6px;
-  animation: blink 1.4s ease-in-out infinite;
-}
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.45} }
-main { max-width: 1080px; margin: 0 auto; padding: 26px 20px; }
+main { max-width: 1140px; margin: 0 auto; padding: 26px 20px; }
 h2 {
   color: #444; font-size: 0.68em; letter-spacing: 0.12em;
   text-transform: uppercase; margin-bottom: 10px;
@@ -74,11 +80,14 @@ h2 {
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
 .stat-label { color: #383838; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.08em; }
 .stat-val { color: #ccc; font-size: 1.05em; margin-top: 5px; }
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
-.dot-live { background: #3a9a4a; animation: blink 1.4s infinite; }
-.dot-idle { background: #2a2a2a; }
-.live { color: #3a9a4a; }
-.idle { color: #444; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.dot-live    { background: #3a9a4a; animation: blink 1.4s infinite; }
+.dot-starting{ background: #9a8a2a; animation: blink 1.4s infinite; }
+.dot-error   { background: #9a3a3a; }
+.dot-idle    { background: #2a2a2a; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.45} }
+.live    { color: #3a9a4a; }
+.idle    { color: #444; }
 .stub { color: #2a2a2a; font-style: italic; font-size: 0.85em; }
 table { width: 100%; border-collapse: collapse; font-size: 0.83em; }
 td, th { padding: 7px 10px; border-bottom: 1px solid #161616; }
@@ -107,110 +116,170 @@ input[type=url]::placeholder { color: #2c2c2c; }
 }
 .btn-danger:hover { border-color: #944; color: #b66; }
 .ts { color: #2a2a2a; font-size: 0.72em; }
+/* ── Session cards ─────────────────────────────────────────────────────────── */
+.sessions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.session-card {
+  background: #0f0f0f; border: 1px solid #1c1c1c; border-radius: 6px;
+  padding: 18px 20px; border-left: 3px solid #1c1c1c;
+}
+.session-card.live     { border-left-color: #3a9a4a; }
+.session-card.starting { border-left-color: #8a7a2a; }
+.session-card.error    { border-left-color: #7a2a2a; }
+.card-header { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
+.card-status {
+  font-size: 0.68em; letter-spacing: 0.1em; text-transform: uppercase;
+  color: #444;
+}
+.session-card.live     .card-status { color: #3a9a4a; }
+.session-card.starting .card-status { color: #8a7a2a; }
+.session-card.error    .card-status { color: #7a2a2a; }
+.card-id { color: #383838; font-size: 0.72em; margin-right: auto; }
+.badge {
+  font-size: 0.62em; padding: 2px 7px; border-radius: 3px;
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+.badge-yt     { background: #141c2c; color: #3a5a9a; border: 1px solid #1e2e4a; }
+.badge-stream { background: #141e1a; color: #2a6a4a; border: 1px solid #1e3028; }
+.card-url  { color: #444; font-size: 0.76em; margin-bottom: 7px; word-break: break-all; }
+.card-stats{ color: #333; font-size: 0.72em; margin-bottom: 10px; }
+.card-cue  { color: #555; font-size: 0.82em; font-style: italic; min-height: 2.2em; margin-bottom: 12px; }
+.card-cue.idle { color: #252525; }
+.card-footer { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+.btn-watch {
+  color: #3a9a4a; text-decoration: none; font-size: 0.78em;
+  padding: 5px 13px; border: 1px solid #1a4a2a; border-radius: 4px;
+}
+.btn-watch:hover { background: #0f2a1a; }
+.btn-stop {
+  background: none; border: 1px solid #3a1a1a; color: #633;
+  font-size: 0.72em; padding: 4px 10px; border-radius: 3px; cursor: pointer;
+}
+.btn-stop:hover { border-color: #7a2a2a; color: #a44; }
+.empty-state {
+  color: #252525; font-size: 0.85em; font-style: italic;
+  text-align: center; padding: 50px 20px;
+}
+.hint { color: #2c2c2c; font-size: 0.72em; }
 """
 
 
-def _nav(active: str, session_active: bool) -> str:
-    tabs = [('Dashboard', '/dashboard'), ('Monitor', '/monitor'),
+def _nav(active: str) -> str:
+    tabs = [('Streams', '/'), ('Monitor', '/monitor'),
             ('Config', '/config'), ('Logs', '/logs')]
     links = ''.join(
-        f'<a href="{h}" class="nav-link{"  active" if lbl.lower() == active else ""}">{lbl}</a>'
+        f'<a href="{h}" class="nav-link'
+        f'{" active" if lbl.lower() == active else ""}">{lbl}</a>'
         for lbl, h in tabs
     )
-    live = ('<a href="/player" class="nav-live">&#9654;&nbsp;Live</a>'
-            if session_active else '')
     return (f'<nav><span class="nav-logo">MicroCaption</span>'
-            f'{links}{live}</nav>')
+            f'{links}</nav>')
 
 
-def _wrap(title: str, active: str, body: str,
-          session_active: bool = False, script: str = '') -> str:
+def _wrap(title: str, active: str, body: str, script: str = '') -> str:
     st = f'<script>{script}</script>' if script else ''
     return (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<title>MicroCaption — {title}</title>'
             f'<style>{_SHARED_CSS}</style></head><body>'
-            f'{_nav(active, session_active)}'
+            f'{_nav(active)}'
             f'<main>{body}</main>{st}</body></html>')
 
 
-# ── Landing page ──────────────────────────────────────────────────────────────
+# ── Control room JS ───────────────────────────────────────────────────────────
 
-_LANDING_HTML = """<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>MicroCaption — Live ASR Demo</title>
-  <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{
-      background: #0d0d0d; color: #ddd; font-family: monospace;
-      min-height: 100vh; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; padding: 2em; gap: 0;
-    }}
-    h1 {{ font-size: 2em; letter-spacing: 0.18em; text-transform: uppercase; color: #fff; }}
-    .tagline {{ color: #444; font-size: 0.8em; letter-spacing: 0.06em; margin: 0.6em 0 2.4em; }}
-    form {{ display: flex; gap: 10px; width: 100%; max-width: 720px; }}
-    input[type=url] {{
-      flex: 1; padding: 13px 16px; background: #181818; border: 1px solid #2a2a2a;
-      border-radius: 5px; color: #eee; font-family: monospace; font-size: 0.95em; outline: none;
-      transition: border-color .2s;
-    }}
-    input[type=url]:focus {{ border-color: #3a3; }}
-    input[type=url]::placeholder {{ color: #383838; }}
-    button {{
-      padding: 13px 28px; background: #2a7a3a; border: none; border-radius: 5px;
-      color: #fff; font-family: monospace; font-size: 1em; font-weight: bold;
-      cursor: pointer; white-space: nowrap; transition: background .2s;
-    }}
-    button:hover {{ background: #3a9a4a; }}
-    .hint {{ margin-top: 1.2em; color: #383838; font-size: 0.72em; }}
-    .now-playing {{
-      margin-top: 2.4em; padding: 14px 22px; background: #131313;
-      border: 1px solid #2a3a2a; border-radius: 5px; font-size: 0.82em; color: #666;
-      display: flex; align-items: center; gap: 14px; width: 100%; max-width: 720px;
-    }}
-    .dot {{ width: 8px; height: 8px; border-radius: 50%; background: #3a9a4a;
-             animation: pulse 1.4s ease-in-out infinite; flex-shrink: 0; }}
-    @keyframes pulse {{ 0%,100% {{ opacity:1 }} 50% {{ opacity:.3 }} }}
-    .now-playing a {{ color: #4c4; text-decoration: none; font-weight: bold; }}
-    .now-playing a:hover {{ text-decoration: underline; }}
-  </style>
-</head>
-<body>
-  <h1>MicroCaption</h1>
-  <p class="tagline">Real-time ASR captions &bull; CEA-608 / CEA-708 &bull; Whisper large-v3-turbo on GPU</p>
-  <form method="POST" action="/start">
-    <input type="url" name="url"
-      placeholder="YouTube, Twitch, peg.tv, or any yt-dlp supported URL&hellip;"
-      required autofocus>
-    <button type="submit">&#9654;&nbsp; Caption</button>
-  </form>
-  <p class="hint">Audio is extracted server-side via yt-dlp &mdash; no third-party transcription APIs.</p>
-  {NOW_PLAYING}
-</body>
-</html>
+_CONTROL_ROOM_JS = r"""
+function escH(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function fmtUp(s){
+  if(s==null)return'—';
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60);
+  return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0');
+}
+function cardHtml(s){
+  const badge=s.source_type==='youtube'
+    ?'<span class="badge badge-yt">YouTube</span>'
+    :'<span class="badge badge-stream">Stream</span>';
+  const dotCls=s.status==='live'?'dot-live':s.status==='starting'?'dot-starting':'dot-error';
+  const statusLbl=s.status.toUpperCase();
+  const urlD=s.url.length>64?s.url.slice(0,64)+'…':s.url;
+  const cueHtml=s.last_cue
+    ?`<div class="card-cue">“${escH(s.last_cue.slice(0,110)+(s.last_cue.length>110?'…':''))}”</div>`
+    :'<div class="card-cue idle">No captions yet…</div>';
+  const errHtml=s.error?`<div style="color:#7a2a2a;font-size:.72em;margin-bottom:8px">${escH(s.error)}</div>`:'';
+  return `<div class="session-card ${escH(s.status)}">
+<div class="card-header">
+  <span class="dot ${dotCls}"></span>
+  <span class="card-status">${statusLbl}</span>
+  <span class="card-id">${escH(s.id)}</span>
+  ${badge}
+  <button class="btn-stop" onclick="stopSess('${escH(s.id)}')">&#9632;</button>
+</div>
+<div class="card-url">${escH(urlD)}</div>
+<div class="card-stats">${fmtUp(s.uptime_s)}&nbsp;&middot;&nbsp;${s.cue_count}&nbsp;cues</div>
+${errHtml}${cueHtml}
+<div class="card-footer">
+  <a href="/player/${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>
+</div>
+</div>`;
+}
+async function refresh(){
+  try{
+    const data=await(await fetch('/api/sessions')).json();
+    const wrap=document.getElementById('sessions-grid-wrap');
+    const cnt=document.getElementById('stream-count');
+    if(cnt)cnt.textContent=data.length+' active';
+    if(!wrap)return;
+    if(!data.length){
+      wrap.innerHTML='<div class="sessions-grid"><div class="empty-state">No active streams — add one below.</div></div>';
+      return;
+    }
+    wrap.innerHTML='<div class="sessions-grid">'+data.map(cardHtml).join('')+'</div>';
+  }catch(e){}
+}
+async function stopSess(id){
+  try{await fetch('/stop/'+id,{method:'POST'});}catch(e){}
+  refresh();
+}
+const addForm=document.getElementById('add-form');
+if(addForm){
+  addForm.addEventListener('submit',async e=>{
+    e.preventDefault();
+    const inp=document.getElementById('url-input');
+    const btn=document.getElementById('add-btn');
+    const url=inp.value.trim();
+    if(!url)return;
+    btn.disabled=true; btn.textContent='Starting…';
+    try{
+      const r=await fetch('/api/start',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'url='+encodeURIComponent(url),
+      });
+      const d=await r.json();
+      if(d.session_id){
+        inp.value='';
+        window.open('/player/'+d.session_id,'_blank','noopener');
+        await refresh();
+      } else if(d.error){
+        alert('Error: '+d.error);
+      }
+    }catch(e){alert('Request failed: '+e);}
+    finally{btn.disabled=false; btn.textContent='▶ Caption';}
+  });
+}
+refresh();
+setInterval(refresh,2000);
 """
 
-_NOW_PLAYING_BLOCK = """
-  <div class="now-playing">
-    <div class="dot"></div>
-    <span>Session active &mdash; <a href="/player">watch with live captions &rarr;</a></span>
-    <form method="POST" action="/stop" style="margin:0;margin-left:auto">
-      <button type="submit" style="background:none;border:1px solid #5a2020;color:#844;font-family:monospace;font-size:0.9em;padding:4px 12px;border-radius:4px;cursor:pointer;">&#9632; Stop</button>
-    </form>
-  </div>
-"""
 
 # ── Player page ───────────────────────────────────────────────────────────────
 
-def _make_player_html(video_id: str, source_url: str = '',
-                      source_type: str = 'youtube') -> str:
+def _make_player_html(video_id: str, source_url: str,
+                      source_type: str, session_id: str) -> str:
     is_yt = (source_type == 'youtube')
-
-    # ── Parts that vary between YouTube and generic embeds ────────────────────
-    # These are plain Python strings substituted into the f-string below.
-    # Their { } are literal JS braces — they are NOT re-processed by the
-    # f-string escaping rules, so no {{ }} doubling is needed inside them.
 
     yt_api_tag = (
         '  <script src="https://www.youtube.com/iframe_api"></script>\n'
@@ -236,8 +305,6 @@ def _make_player_html(video_id: str, source_url: str = '',
             f'    </iframe>'
         )
 
-    # YouTube IFrame API callbacks (omitted for non-YouTube — videoPaused stays
-    # false so the cue guard is a no-op).
     yt_pause_js = (
         '\n'
         '    let ytPlayer;\n'
@@ -306,21 +373,19 @@ def _make_player_html(video_id: str, source_url: str = '',
       font-size: 0.72em; color: #333;
     }}
     #status {{ display: inline-block; padding: 2px 8px; border-radius: 3px; }}
-    #status.live {{ color: #4c4; }}
+    #status.live    {{ color: #4c4; }}
     #status.waiting {{ color: #555; }}
-    #status.error {{ color: #c44; }}
+    #status.error   {{ color: #c44; }}
     #footer a {{ color: #333; text-decoration: none; }}
     #footer a:hover {{ color: #666; }}
   </style>
 {yt_api_tag}</head>
 <body>
   <div id="topbar">
-    <h1>MicroCaption &mdash; Live ASR</h1>
+    <h1>MicroCaption — Live ASR</h1>
     <div style="display:flex;gap:8px">
-      <a href="/">&#8592; New video</a>
-      <form method="POST" action="/stop" style="margin:0">
-        <button id="stop-btn" type="submit">&#9632; Stop</button>
-      </form>
+      <a href="/">← Control room</a>
+      <button id="stop-btn" onclick="stopSession()">&#9632; Stop</button>
     </div>
   </div>
   <div id="player-wrap">
@@ -329,38 +394,29 @@ def _make_player_html(video_id: str, source_url: str = '',
   </div>
   <div id="footer">
     <span id="status" class="waiting">Connecting&hellip;</span>
-    <span><a href="/webvtt">Download WebVTT</a></span>
+    <span><a href="/webvtt/{session_id}">Download WebVTT</a></span>
   </div>
 
   <script>
     const bar = document.getElementById('caption-bar');
     const status = document.getElementById('status');
 
-    // Rate-limited two-line display.
-    //
-    // The ASR backend fires every ~0.5 s (sliding-window step). Rendering every
-    // update looks like flickering. Broadcast standards (BBC, Netflix) require a
-    // minimum of ~2 s per screen so viewers can finish reading before the text
-    // changes. We enforce that here:
-    //
-    //   - First cue of a new utterance shows immediately.
-    //   - Subsequent cues of the same utterance are buffered; the screen only
-    //     updates once MIN_STABLE_MS has elapsed since the last render.
-    //   - After DWELL_MS of silence the screen clears.
-    //   - splitLines word-wraps to MAX_CHARS and we show the last 2 lines
-    //     (most recently spoken words when text is longer than two lines).
+    async function stopSession() {{
+      await fetch('/stop/{session_id}', {{method:'POST'}});
+      window.location.href = '/';
+    }}
 
-    let pendingText   = '';   // latest text from ASR (may not be shown yet)
-    let displayedText = '';   // text currently on screen
-    let lastRenderTime = 0;   // Date.now() of the last screen update
-    let renderTimer   = null; // handle for the deferred-update setTimeout
-    let clearTimer    = null; // handle for the silence-dwell setTimeout
+    let pendingText   = '';
+    let displayedText = '';
+    let lastRenderTime = 0;
+    let renderTimer   = null;
+    let clearTimer    = null;
     let videoPaused   = false;
 {yt_pause_js}
 
-    const DWELL_MS      = 5000;  // clear after 5 s of silence
-    const MIN_STABLE_MS = 2000;  // minimum hold per screen (BBC/Netflix standard)
-    const MAX_CHARS     = 32;    // CEA-608 / CEA-708 line width
+    const DWELL_MS      = 5000;
+    const MIN_STABLE_MS = 2000;
+    const MAX_CHARS     = 32;
 
     function splitLines(text) {{
       const words = text.trim().split(/\\s+/);
@@ -410,21 +466,15 @@ def _make_player_html(video_id: str, source_url: str = '',
 
     function onCue(newText) {{
       if (!newText.trim()) return;
-
       if (clearTimer) {{ clearTimeout(clearTimer); clearTimer = null; }}
-
       const isNew = !isContinuation(pendingText || displayedText, newText);
       pendingText = newText;
-
       if (isNew) {{
-        // New utterance — clear and render immediately
         displayedText  = '';
         lastRenderTime = 0;
         if (renderTimer) {{ clearTimeout(renderTimer); renderTimer = null; }}
       }}
-
       tryUpdate();
-
       clearTimer = setTimeout(() => {{
         bar.innerHTML  = '';
         pendingText = displayedText = '';
@@ -434,10 +484,10 @@ def _make_player_html(video_id: str, source_url: str = '',
       }}, DWELL_MS);
     }}
 
-    const es = new EventSource('/events');
+    const es = new EventSource('/events/{session_id}');
 
     es.addEventListener('cue', e => {{
-      if (videoPaused) return;   // freeze: drop cues while video is paused
+      if (videoPaused) return;
       const d = JSON.parse(e.data);
       status.textContent = 'LIVE';
       status.className = 'live';
@@ -459,6 +509,7 @@ def _make_player_html(video_id: str, source_url: str = '',
 </html>
 """
 
+
 _NO_SESSION_HTML = """<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>MicroCaption</title>
@@ -466,7 +517,7 @@ _NO_SESSION_HTML = """<!DOCTYPE html>
 <style>body{{background:#0d0d0d;color:#555;font-family:monospace;
 display:flex;align-items:center;justify-content:center;height:100vh;}}</style>
 </head>
-<body>No active session &mdash; redirecting&hellip;</body>
+<body>Session not found &mdash; redirecting&hellip;</body>
 </html>
 """
 
@@ -474,112 +525,88 @@ display:flex;align-items:center;justify-content:center;height:100vh;}}</style>
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class _Handler(BaseHTTPRequestHandler):
-    writer: WebVTTWriter = None
-    video_id: str = ''
-    session_active: bool = False   # set True when any session starts; cleared on stop
-    start_callback: Optional[Callable[[str], None]] = None
-    stop_callback: Optional[Callable[[], None]] = None
-    _sse_clients: List = []
-    _sse_lock: threading.Lock = None
-    # source info
-    source_url: str = ''
-    source_type: str = 'youtube'   # 'youtube' | 'stream'
-    # dashboard / monitoring
+    # Session registry — shared across all handler instances via class variables.
+    # The registry dict maps session_id → Session; populated by WebVTTServer.
+    _session_registry: Dict = {}
+    _registry_lock: threading.Lock = None
+
+    # Callbacks set by WebVTTServer.__init__
+    start_callback: Optional[Callable[[str], str]] = None  # url → session_id
+    stop_callback: Optional[Callable[[str], None]] = None  # session_id → None
     metrics_provider: Optional[Callable[[], Dict]] = None
     config_snapshot: Dict = {}
-    _recent_cues: Deque = deque(maxlen=50)
-    _session_start: Optional[float] = None   # monotonic timestamp
 
     def log_message(self, fmt, *args):
-        pass
+        pass  # suppress default access log
 
-    # ── GET ───────────────────────────────────────────────────────────────────
+    # ── routing ───────────────────────────────────────────────────────────────
 
     def do_GET(self):
-        if self.path == '/':
-            now_playing = _NOW_PLAYING_BLOCK if self.session_active else ''
-            html = _LANDING_HTML.format(NOW_PLAYING=now_playing)
-            self._send(html.encode(), 'text/html')
+        path = self.path.split('?')[0]
+        parts = [p for p in path.split('/') if p]
 
-        elif self.path == '/player':
-            if not self.session_active:
+        if path in ('/', '/dashboard'):
+            self._send(self._page_control_room().encode(), 'text/html')
+
+        elif parts[:1] == ['player'] and len(parts) == 2:
+            sess = self._session_registry.get(parts[1])
+            if not sess:
                 self._send(_NO_SESSION_HTML.encode(), 'text/html')
             else:
                 html = _make_player_html(
-                    self.video_id, self.source_url, self.source_type)
+                    sess.video_id, sess.url, sess.source_type, sess.id)
                 self._send(html.encode(), 'text/html')
 
-        elif self.path == '/events':
-            self._sse_stream()
+        elif parts[:1] == ['events'] and len(parts) == 2:
+            self._sse_stream(parts[1])
 
-        elif self.path == '/webvtt':
-            self._send(self.writer.flush().encode(), 'text/vtt')
+        elif parts[:1] == ['webvtt'] and len(parts) == 2:
+            sess = self._session_registry.get(parts[1])
+            if not sess:
+                self.send_error(404)
+            else:
+                self._send(sess.writer.flush().encode(), 'text/vtt')
 
-        elif self.path == '/status':
+        elif path == '/monitor':
+            self._send(self._page_monitor().encode(), 'text/html')
+        elif path == '/config':
+            self._send(self._page_config().encode(), 'text/html')
+        elif path == '/logs':
+            self._send(self._page_logs().encode(), 'text/html')
+
+        elif path == '/api/sessions':
+            self._send(self._build_sessions_json().encode(), 'application/json')
+        elif path == '/api/metrics':
+            self._send(self._build_metrics_json().encode(), 'application/json')
+        elif path == '/api/config':
+            self._send(
+                json.dumps(_Handler.config_snapshot, indent=2).encode(),
+                'application/json',
+            )
+        elif path == '/status':
+            sessions = list(self._session_registry.values())
             payload = json.dumps({
-                'active': self.session_active,
-                'video_id': self.video_id,
-                'cue_count': self.writer.cue_count,
+                'active': len(sessions) > 0,
+                'session_count': len(sessions),
+                'sessions': [{'id': s.id, 'status': s.status} for s in sessions],
             })
             self._send(payload.encode(), 'application/json')
-
-        elif self.path == '/dashboard':
-            self._send(self._page_dashboard().encode(), 'text/html')
-        elif self.path == '/monitor':
-            self._send(self._page_monitor().encode(), 'text/html')
-        elif self.path == '/config':
-            self._send(self._page_config().encode(), 'text/html')
-        elif self.path == '/logs':
-            self._send(self._page_logs().encode(), 'text/html')
-        elif self.path == '/api/metrics':
-            self._send(self._build_metrics_json().encode(), 'application/json')
-        elif self.path == '/api/config':
-            self._send(json.dumps(self.config_snapshot, indent=2).encode(),
-                       'application/json')
 
         else:
             self.send_error(404)
 
-    # ── POST ──────────────────────────────────────────────────────────────────
-
     def do_POST(self):
-        if self.path == '/start':
-            length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(length).decode(errors='replace')
-            params = urllib.parse.parse_qs(body)
-            url = params.get('url', [''])[0].strip()
+        path = self.path.split('?')[0]
+        parts = [p for p in path.split('/') if p]
 
-            if url:
-                # Set source info and session_active NOW so /player renders
-                # correctly before the background thread finishes yt-dlp.
-                _Handler.video_id    = _video_id_from_url(url)
-                _Handler.source_url  = url
-                _Handler.source_type = 'youtube' if _Handler.video_id else 'stream'
-                _Handler.session_active = True
-                _Handler._session_start = time.monotonic()
-
-                # Access via class, not self — prevents Python binding the
-                # function as an instance method and adding a spurious argument.
-                cb = _Handler.start_callback
-                if cb:
-                    threading.Thread(
-                        target=cb,
-                        args=(url,),
-                        daemon=True,
-                        name='session-start',
-                    ).start()
-
-            self.send_response(303)
-            self.send_header('Location', '/player')
-            self.send_header('Content-Length', '0')
-            self.end_headers()
-        elif self.path == '/stop':
-            cb = _Handler.stop_callback
-            if cb:
-                threading.Thread(target=cb, daemon=True, name='session-stop').start()
-            _Handler.video_id = ''
-            _Handler.session_active = False
-            _Handler._session_start = None
+        if path == '/start':
+            self._post_start(redirect=True)
+        elif path == '/api/start':
+            self._post_start(redirect=False)
+        elif parts[:1] == ['stop'] and len(parts) == 2:
+            self._post_stop(parts[1])
+        elif path == '/stop':
+            # Deprecated — no session_id; redirect to control room
             self.send_response(303)
             self.send_header('Location', '/')
             self.send_header('Content-Length', '0')
@@ -587,76 +614,151 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(405)
 
-    # ── dashboard pages ───────────────────────────────────────────────────────
+    # ── POST handlers ─────────────────────────────────────────────────────────
 
-    def _page_dashboard(self) -> str:
-        if self.session_active:
-            vid_url = self.source_url or '—'
-            session_block = (
-                f'<div class="card">'
-                f'<span class="dot dot-live"></span>'
-                f'<span class="live">Session active</span>'
-                f'&nbsp;&nbsp;'
-                f'<span style="color:#555;font-size:.85em">{vid_url}</span>'
-                f'&nbsp;&nbsp;'
-                f'<a href="/player" style="color:#4c4;font-size:.85em;text-decoration:none">'
-                f'&#9654;&nbsp;Watch live &rarr;</a>'
-                f'&nbsp;&nbsp;'
-                f'<form method="POST" action="/stop" style="display:inline;margin:0">'
-                f'<button class="btn-danger" type="submit">&#9632; Stop</button>'
-                f'</form>'
-                f'</div>'
-            )
+    def _post_start(self, redirect: bool) -> None:
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode(errors='replace')
+        params = urllib.parse.parse_qs(body)
+        url = params.get('url', [''])[0].strip()
+
+        if not url:
+            if redirect:
+                self.send_response(303)
+                self.send_header('Location', '/')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+            else:
+                self._send_json({'error': 'no url provided'}, 400)
+            return
+
+        session_id = ''
+        cb = _Handler.start_callback
+        if cb:
+            # Access via class to avoid descriptor binding adding spurious 'self'.
+            session_id = cb(url)
+
+        if redirect:
+            dest = f'/player/{session_id}' if session_id else '/'
+            self.send_response(303)
+            self.send_header('Location', dest)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
         else:
-            session_block = (
-                '<div class="card">'
-                '<span class="dot dot-idle"></span>'
-                '<span class="idle">No active session</span>'
+            self._send_json({
+                'session_id': session_id,
+                'player_url': f'/player/{session_id}',
+            })
+
+    def _post_stop(self, session_id: str) -> None:
+        cb = _Handler.stop_callback
+        if cb:
+            threading.Thread(
+                target=cb, args=(session_id,), daemon=True,
+                name=f'session-stop-{session_id}',
+            ).start()
+        self.send_response(303)
+        self.send_header('Location', '/')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    # ── page renderers ────────────────────────────────────────────────────────
+
+    def _page_control_room(self) -> str:
+        sessions = list(self._session_registry.values())
+        stream_count = len(sessions)
+
+        if sessions:
+            cards = ''.join(self._session_card_html(s) for s in sessions)
+            grid_html = f'<div class="sessions-grid">{cards}</div>'
+        else:
+            grid_html = (
+                '<div class="sessions-grid">'
+                '<div class="empty-state">No active streams — add one below.</div>'
                 '</div>'
             )
 
-        cue_count = self.writer.cue_count if self.writer else 0
-        backend = self.config_snapshot.get('asr', {}).get('primary', '—')
-
         body = (
-            f'<h2>Session</h2>{session_block}'
-            f'<h2>New session</h2>'
+            f'<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">'
+            f'<h2>Active Streams</h2>'
+            f'<span id="stream-count" style="color:#333;font-size:.78em">'
+            f'{stream_count} active</span>'
+            f'</div>'
+            f'<div id="sessions-grid-wrap">{grid_html}</div>'
+            f'<h2 style="margin-top:24px">Add Stream</h2>'
             f'<div class="card">'
-            f'<form class="row" method="POST" action="/start">'
-            f'<input type="url" name="url" placeholder="https://www.youtube.com/watch?v=…" required autofocus>'
-            f'<button class="btn-primary" type="submit">&#9654;&nbsp;Caption</button>'
+            f'<form id="add-form" class="row">'
+            f'<input type="url" id="url-input"'
+            f' placeholder="YouTube, Twitch, peg.tv, or any yt-dlp URL…" required>'
+            f'<button id="add-btn" class="btn-primary" type="submit">'
+            f'&#9654;&nbsp;Caption</button>'
             f'</form>'
             f'</div>'
-            f'<h2>Quick stats</h2>'
-            f'<div class="card grid3">'
-            f'<div><div class="stat-label">Cues generated</div>'
-            f'<div class="stat-val" id="qs-cues">{cue_count}</div></div>'
-            f'<div><div class="stat-label">ASR backend</div>'
-            f'<div class="stat-val">{backend}</div></div>'
-            f'<div><div class="stat-label">Session uptime</div>'
-            f'<div class="stat-val" id="qs-uptime">—</div></div>'
+            f'<p class="hint" style="margin-top:8px">'
+            f'Audio extracted server-side via yt-dlp — no third-party APIs.</p>'
+        )
+        return _wrap('Streams', 'streams', body, _CONTROL_ROOM_JS)
+
+    def _session_card_html(self, sess) -> str:
+        recent = list(sess.recent_cues)
+        last_cue = recent[-1]['text'] if recent else ''
+        cue_count = sess.writer.cue_count if sess.writer else 0
+        up = sess.uptime
+        uptime_str = f'{int(up//3600):02d}:{int((up%3600)//60):02d}:{int(up%60):02d}'
+        badge_cls = 'badge-yt' if sess.source_type == 'youtube' else 'badge-stream'
+        type_label = 'YouTube' if sess.source_type == 'youtube' else 'Stream'
+        url_d = _esc((sess.url[:64] + '…') if len(sess.url) > 64 else sess.url)
+        dot_cls = {
+            'live': 'dot-live', 'starting': 'dot-starting', 'error': 'dot-error',
+        }.get(sess.status, 'dot-idle')
+        cue_html = (
+            f'<div class="card-cue">“{_esc(last_cue[:110])}'
+            f'{"…" if len(last_cue) > 110 else ""}”</div>'
+            if last_cue else
+            '<div class="card-cue idle">No captions yet…</div>'
+        )
+        err_html = (
+            f'<div style="color:#7a2a2a;font-size:.72em;margin-bottom:8px">'
+            f'{_esc(sess.error)}</div>'
+        ) if sess.error else ''
+
+        return (
+            f'<div class="session-card {sess.status}">'
+            f'<div class="card-header">'
+            f'<span class="dot {dot_cls}"></span>'
+            f'<span class="card-status">{sess.status.upper()}</span>'
+            f'<span class="card-id">{_esc(sess.id)}</span>'
+            f'<span class="badge {badge_cls}">{type_label}</span>'
+            f'<button class="btn-stop" onclick="stopSess(\'{_esc(sess.id)}\')">&#9632;</button>'
+            f'</div>'
+            f'<div class="card-url">{url_d}</div>'
+            f'<div class="card-stats">{uptime_str}&nbsp;&middot;&nbsp;{cue_count}&nbsp;cues</div>'
+            f'{err_html}{cue_html}'
+            f'<div class="card-footer">'
+            f'<a href="/player/{_esc(sess.id)}" target="_blank" rel="noopener" class="btn-watch">'
+            f'&#9654;&nbsp;Watch live</a>'
+            f'</div>'
             f'</div>'
         )
-        script = (
-            'async function poll(){'
-            'try{'
-            'const d=await(await fetch("/api/metrics")).json();'
-            'const g=id=>document.getElementById(id);'
-            'if(g("qs-cues"))g("qs-cues").textContent=d.captions?.cue_count??"—";'
-            'const s=d.session?.uptime_s;'
-            'if(g("qs-uptime")&&s!=null){'
-            'const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60);'
-            'g("qs-uptime").textContent='
-            'String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(sc).padStart(2,"0");'
-            '}}catch(e){}}'
-            'poll();setInterval(poll,3000);'
-        )
-        return _wrap('Dashboard', 'dashboard', body, self.session_active, script)
 
     def _page_monitor(self) -> str:
+        sessions = list(self._session_registry.values())
+        session_rows = ''.join(
+            f'<tr>'
+            f'<td>{_esc(s.id)}</td>'
+            f'<td>{s.source_type}</td>'
+            f'<td style="color:{"#3a9a4a" if s.status=="live" else "#555"}">{s.status}</td>'
+            f'<td>—</td>'
+            f'<td>{s.writer.cue_count if s.writer else 0}</td>'
+            f'<td><a href="/player/{_esc(s.id)}" target="_blank"'
+            f' style="color:#3a9a4a">Watch</a></td>'
+            f'</tr>'
+            for s in sessions
+        ) or '<tr><td colspan="6" class="stub">No active sessions.</td></tr>'
+
         body = (
             '<div class="grid2">'
-            '<div><h2>ASR Latency</h2><div class="card">'
+            '<div><h2>ASR Latency (aggregate)</h2><div class="card">'
             '<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>'
             '<tr><td>Mean</td><td id="lat-mean">—</td></tr>'
             '<tr><td>p95</td><td id="lat-p95">—</td></tr>'
@@ -664,111 +766,174 @@ class _Handler(BaseHTTPRequestHandler):
             '<tr><td>Rate</td><td id="lat-rate">—</td></tr>'
             '<tr><td>Total inferences</td><td id="lat-total">—</td></tr>'
             '</tbody></table></div></div>'
-            '<div><h2>Session</h2><div class="card">'
-            '<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>'
-            '<tr><td>Status</td><td id="mon-status">—</td></tr>'
-            '<tr><td>Uptime</td><td id="mon-uptime">—</td></tr>'
-            '<tr><td>Cues generated</td><td id="mon-cues">—</td></tr>'
-            '<tr><td>ASR backend</td><td id="mon-backend">—</td></tr>'
-            '</tbody></table></div></div>'
+            '<div><h2>System</h2><div class="card">'
+            '<div><div class="stat-label">Active streams</div>'
+            '<div class="stat-val" id="sys-streams">—</div></div>'
+            '<div style="margin-top:14px"><div class="stat-label">Total cues</div>'
+            '<div class="stat-val" id="sys-cues">—</div></div>'
+            '<div style="margin-top:14px"><div class="stat-label">GPU util</div>'
+            '<div class="stat-val stub">Phase 2</div></div>'
+            '</div></div>'
             '</div>'
-            '<h2>System</h2>'
-            '<div class="card grid3">'
-            '<div><div class="stat-label">GPU utilisation</div>'
-            '<div class="stat-val stub">Phase 2</div></div>'
-            '<div><div class="stat-label">CPU utilisation</div>'
-            '<div class="stat-val stub">Phase 2</div></div>'
-            '<div><div class="stat-label">VRAM used</div>'
-            '<div class="stat-val stub">Phase 2</div></div>'
-            '</div>'
-            '<p class="ts" id="refresh-ts" style="margin-top:8px">'
-            'Refreshing every 2 s…</p>'
+            '<h2 style="margin-top:20px">Sessions</h2>'
+            '<div class="card">'
+            '<table><thead><tr>'
+            '<th>ID</th><th>Type</th><th>Status</th><th>Uptime</th><th>Cues</th><th></th>'
+            f'</tr></thead><tbody id="sessions-tbody">{session_rows}</tbody></table></div>'
+            '<p class="ts" id="refresh-ts" style="margin-top:8px">Refreshing every 2 s…</p>'
         )
         script = (
             'function fms(v){return v==null?"—":v.toFixed(0)+" ms";}'
-            'function fup(s){'
-            'if(s==null)return "—";'
+            'function fup(s){if(s==null)return "—";'
             'const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60);'
-            'return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(sc).padStart(2,"0");'
-            '}'
+            'return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(sc).padStart(2,"0");}'
             'async function refresh(){'
             'try{'
-            'const d=await(await fetch("/api/metrics")).json();'
-            'const id=s=>document.getElementById(s);'
-            'id("lat-mean").textContent=fms(d.asr?.mean_ms);'
-            'id("lat-p95").textContent=fms(d.asr?.p95_ms);'
-            'id("lat-max").textContent=fms(d.asr?.max_ms);'
-            'id("lat-rate").textContent=d.asr?.rate!=null?d.asr.rate.toFixed(2)+"/s":"—";'
-            'id("lat-total").textContent=d.asr?.total??"—";'
-            'id("mon-status").textContent=d.session?.active?"Active":"Idle";'
-            'id("mon-status").style.color=d.session?.active?"#3a9a4a":"#444";'
-            'id("mon-uptime").textContent=fup(d.session?.uptime_s);'
-            'id("mon-cues").textContent=d.captions?.cue_count??"—";'
-            'id("mon-backend").textContent=d.asr?.backend??"—";'
-            'id("refresh-ts").textContent="Last update: "+new Date().toLocaleTimeString();'
+            'const[m,ss]=await Promise.all(['
+            'fetch("/api/metrics").then(r=>r.json()),'
+            'fetch("/api/sessions").then(r=>r.json())]);\n'
+            'const g=s=>document.getElementById(s);\n'
+            'g("lat-mean").textContent=fms(m.asr?.mean_ms);\n'
+            'g("lat-p95").textContent=fms(m.asr?.p95_ms);\n'
+            'g("lat-max").textContent=fms(m.asr?.max_ms);\n'
+            'g("lat-rate").textContent=m.asr?.rate!=null?m.asr.rate.toFixed(2)+"/s":"—";\n'
+            'g("lat-total").textContent=m.asr?.total??"—";\n'
+            'if(g("sys-streams"))g("sys-streams").textContent=m.session_count??"—";\n'
+            'if(g("sys-cues"))g("sys-cues").textContent=m.captions?.total_cues??"—";\n'
+            'const tb=g("sessions-tbody");\n'
+            'if(tb&&ss.length){'
+            'tb.innerHTML=ss.map(s=>`<tr><td>${s.id}</td><td>${s.source_type}</td>'
+            '<td style="color:${s.status==="live"?"#3a9a4a":"#555"}">${s.status}</td>'
+            '<td>${fup(s.uptime_s)}</td><td>${s.cue_count}</td>'
+            '<td><a href="/player/${s.id}" target="_blank" style="color:#3a9a4a">Watch</a></td>'
+            '</tr>`).join("");'
+            '}else if(tb){'
+            'tb.innerHTML=\'<tr><td colspan="6" class="stub">No active sessions.</td></tr>\';'
+            '}'
+            'g("refresh-ts").textContent="Last update: "+new Date().toLocaleTimeString();'
             '}catch(e){}}'
             'refresh();setInterval(refresh,2000);'
         )
-        return _wrap('Monitor', 'monitor', body, self.session_active, script)
+        return _wrap('Monitor', 'monitor', body, script)
 
     def _page_config(self) -> str:
-        cfg_json = json.dumps(self.config_snapshot, indent=2)
+        cfg_json = _esc(json.dumps(_Handler.config_snapshot, indent=2))
         body = (
             '<h2>Active configuration</h2>'
             f'<div class="card"><pre>{cfg_json}</pre></div>'
             '<p class="stub" style="margin-top:6px">'
             'Per-field editing and hot-reload — Phase 2</p>'
         )
-        return _wrap('Config', 'config', body, self.session_active)
+        return _wrap('Config', 'config', body)
 
     def _page_logs(self) -> str:
+        all_cues: list = []
+        for s in self._session_registry.values():
+            for c in s.recent_cues:
+                all_cues.append({
+                    'session': s.id,
+                    'ts': c['ts'],
+                    'text': c['text'],
+                })
+        all_cues.sort(key=lambda c: c['ts'], reverse=True)
+        all_cues = all_cues[:100]
+
         rows = ''.join(
-            f'<tr><td class="ts">{c["ts"]}</td><td>{c["text"]}</td></tr>'
-            for c in reversed(list(self._recent_cues))
-        ) or ('<tr><td colspan="2" class="stub">'
-               'No captions yet this session.</td></tr>')
+            f'<tr>'
+            f'<td class="ts">{_esc(c["ts"])}</td>'
+            f'<td class="ts">{_esc(c["session"])}</td>'
+            f'<td>{_esc(c["text"])}</td>'
+            f'</tr>'
+            for c in all_cues
+        ) or '<tr><td colspan="3" class="stub">No captions yet this session.</td></tr>'
+
         body = (
             '<h2>Recent captions</h2>'
             '<div class="card">'
-            '<table><thead><tr><th>Time</th><th>Caption</th></tr></thead>'
+            '<table><thead><tr><th>Time</th><th>Session</th><th>Caption</th></tr></thead>'
             f'<tbody>{rows}</tbody></table></div>'
-            '<p style="margin-top:8px;font-size:.75em">'
-            '<a href="/webvtt" style="color:#444">Download WebVTT</a>'
-            '&nbsp;&nbsp;<span class="stub">SRT / PDF export — Phase 2</span></p>'
+            '<p style="margin-top:8px;font-size:.75em;color:#333">'
+            '<span class="stub">WebVTT download per session via the player page &mdash; '
+            'SRT / PDF export Phase 2</span></p>'
             '<h2 style="margin-top:20px">Packet logs</h2>'
-            '<div class="card"><p class="stub">'
-            'Live packet log viewer — Phase 2</p></div>'
+            '<div class="card"><p class="stub">Live packet log viewer — Phase 2</p></div>'
         )
-        return _wrap('Logs', 'logs', body, self.session_active)
+        return _wrap('Logs', 'logs', body)
 
-    # ── API endpoints ─────────────────────────────────────────────────────────
+    # ── API JSON builders ─────────────────────────────────────────────────────
+
+    def _build_sessions_json(self) -> str:
+        data = []
+        for s in self._session_registry.values():
+            recent = list(s.recent_cues)
+            last_cue = recent[-1]['text'] if recent else None
+            data.append({
+                'id': s.id,
+                'url': s.url,
+                'video_id': s.video_id,
+                'source_type': s.source_type,
+                'uptime_s': round(s.uptime, 1),
+                'cue_count': s.writer.cue_count if s.writer else 0,
+                'last_cue': last_cue,
+                'status': s.status,
+                'error': s.error or None,
+            })
+        return json.dumps(data)
 
     def _build_metrics_json(self) -> str:
         asr: Dict = {}
-        provider = _Handler.metrics_provider  # access via class to avoid method binding
+        provider = _Handler.metrics_provider
         if provider:
             try:
                 asr = provider()
             except Exception:
                 pass
 
-        uptime = None
-        if self._session_start is not None:
-            uptime = time.monotonic() - self._session_start
-
+        sessions = list(self._session_registry.values())
         payload = {
-            'session': {
-                'active': self.session_active,
-                'video_id': self.video_id,
-                'uptime_s': round(uptime, 1) if uptime is not None else None,
-            },
+            'session_count': len(sessions),
             'asr': asr,
             'captions': {
-                'cue_count': self.writer.cue_count if self.writer else 0,
-                'recent': list(self._recent_cues)[-10:],
+                'total_cues': sum(
+                    s.writer.cue_count for s in sessions if s.writer
+                ),
             },
         }
         return json.dumps(payload)
+
+    # ── SSE ───────────────────────────────────────────────────────────────────
+
+    def _sse_stream(self, session_id: str) -> None:
+        sess = self._session_registry.get(session_id)
+        if sess is None:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        with sess.sse_lock:
+            sess.sse_clients.append(self)
+        try:
+            while True:
+                time.sleep(15)
+                self.wfile.write(b': ping\n\n')
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            with sess.sse_lock:
+                if self in sess.sse_clients:
+                    sess.sse_clients.remove(self)
+
+    def push_cue(self, cue_json: str) -> bool:
+        try:
+            self.wfile.write(f'event: cue\ndata: {cue_json}\n\n'.encode())
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            return False
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -780,33 +945,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _sse_stream(self) -> None:
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/event-stream')
-        self.send_header('Cache-Control', 'no-cache')
-        self.send_header('Access-Control-Allow-Origin', '*')
+    def _send_json(self, data: dict, status: int = 200) -> None:
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
         self.end_headers()
-        with self._sse_lock:
-            self._sse_clients.append(self)
-        try:
-            while True:
-                time.sleep(15)
-                self.wfile.write(b': ping\n\n')
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            with self._sse_lock:
-                if self in self._sse_clients:
-                    self._sse_clients.remove(self)
-
-    def push_cue(self, cue_json: str) -> bool:
-        try:
-            self.wfile.write(f'event: cue\ndata: {cue_json}\n\n'.encode())
-            self.wfile.flush()
-            return True
-        except (BrokenPipeError, ConnectionResetError):
-            return False
+        self.wfile.write(body)
 
 
 class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -817,44 +962,40 @@ class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 class WebVTTServer:
     """
-    HTTP server managing the caption web UI and SSE fan-out.
+    HTTP server managing the multi-stream caption control room and SSE fan-out.
 
-    Pass start_callback(url: str) to handle YouTube URL submissions from the UI.
-    Call on_caption() from the ASR callback — thread-safe.
-    Call set_video_id() when a new session starts.
+    start_callback(url) → session_id   called on POST /start or /api/start
+    stop_callback(session_id)          called on POST /stop/<id>
+    on_caption(text, start, end, session_id)  push a caption cue to one session
+    register_session(session)          add a Session to the routing table
+    unregister_session(session_id)     remove a Session from the routing table
     """
 
-    def __init__(self, config: dict, writer: WebVTTWriter,
-                 video_id: str = '',
-                 start_callback: Optional[Callable[[str], None]] = None,
-                 stop_callback: Optional[Callable[[], None]] = None,
+    def __init__(self, config: dict,
+                 start_callback: Optional[Callable[[str], str]] = None,
+                 stop_callback: Optional[Callable[[str], None]] = None,
                  metrics_provider: Optional[Callable[[], Dict]] = None,
                  config_snapshot: Optional[Dict] = None) -> None:
         self._host: str = config.get('host', '0.0.0.0')
         self._port: int = config.get('port', 8765)
-        self._writer = writer
         self._lock = threading.Lock()
-        self._clients: List[_Handler] = []
-        self._server: HTTPServer = None
-        self._thread: threading.Thread = None
+        self._server: Optional[HTTPServer] = None
+        self._thread: Optional[threading.Thread] = None
 
-        _Handler.writer = writer
-        _Handler.video_id = video_id
+        _Handler._session_registry = {}
+        _Handler._registry_lock = self._lock
         _Handler.start_callback = start_callback
         _Handler.stop_callback = stop_callback
-        _Handler._sse_clients = self._clients
-        _Handler._sse_lock = self._lock
         _Handler.metrics_provider = metrics_provider
         _Handler.config_snapshot = config_snapshot or {}
-        _Handler._recent_cues = deque(maxlen=50)
 
-    def set_video_id(self, video_id: str) -> None:
-        _Handler.video_id = video_id
+    def register_session(self, session) -> None:
+        with self._lock:
+            _Handler._session_registry[session.id] = session
 
-    def set_source(self, url: str, video_id: str, source_type: str) -> None:
-        _Handler.source_url  = url
-        _Handler.video_id    = video_id
-        _Handler.source_type = source_type
+    def unregister_session(self, session_id: str) -> None:
+        with self._lock:
+            _Handler._session_registry.pop(session_id, None)
 
     def start(self) -> None:
         self._server = _ThreadedHTTPServer((self._host, self._port), _Handler)
@@ -870,26 +1011,27 @@ class WebVTTServer:
         if self._server:
             self._server.shutdown()
 
-    def on_caption(self, text: str, start: float, end: float) -> None:
-        self._writer.add_cue(text, start, end)
-        _Handler._recent_cues.append({
-            'ts': time.strftime('%H:%M:%S'),
-            'text': text,
-        })
+    def on_caption(self, text: str, start: float, end: float,
+                   session_id: str) -> None:
+        sess = _Handler._session_registry.get(session_id)
+        if sess is None:
+            return
+        sess.writer.add_cue(text, start, end)
+        sess.recent_cues.append({'ts': time.strftime('%H:%M:%S'), 'text': text})
         cue_json = json.dumps({
             'text': text,
-            'lines': [l for l in text.split('\n') if l.strip()],
+            'lines': [ln for ln in text.split('\n') if ln.strip()],
             'start': f'{start:.3f}',
             'end': f'{end:.3f}',
         })
         dead = []
-        with self._lock:
-            clients = list(self._clients)
+        with sess.sse_lock:
+            clients = list(sess.sse_clients)
         for client in clients:
             if not client.push_cue(cue_json):
                 dead.append(client)
         if dead:
-            with self._lock:
+            with sess.sse_lock:
                 for c in dead:
-                    if c in self._clients:
-                        self._clients.remove(c)
+                    if c in sess.sse_clients:
+                        sess.sse_clients.remove(c)
