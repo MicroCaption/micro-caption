@@ -22,9 +22,16 @@ from ..caption.webvtt import WebVTTWriter
 def _video_id_from_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     if parsed.hostname in ('youtu.be',):
-        return parsed.path.lstrip('/')
+        return parsed.path.lstrip('/').split('/')[0]
     if parsed.hostname and 'youtube' in parsed.hostname:
-        return urllib.parse.parse_qs(parsed.query).get('v', [''])[0]
+        # standard ?v=ID query param
+        vid = urllib.parse.parse_qs(parsed.query).get('v', [''])[0]
+        if vid:
+            return vid
+        # path-based formats: /shorts/ID, /live/ID, /embed/ID
+        parts = [p for p in parsed.path.split('/') if p]
+        if len(parts) >= 2 and parts[0] in ('shorts', 'live', 'embed'):
+            return parts[1]
     return ''
 
 
@@ -126,15 +133,17 @@ def _make_player_html(video_id: str) -> str:
       position: absolute; bottom: 0; left: 0; right: 0;
       padding: 14px 18px 20px;
       background: linear-gradient(transparent, rgba(0,0,0,.85));
-      text-align: center; pointer-events: none; min-height: 4em;
+      text-align: center; pointer-events: none; min-height: 6em;
       display: flex; flex-direction: column; justify-content: flex-end;
-      align-items: center; gap: 5px;
+      align-items: center; gap: 6px;
     }}
     .caption-line {{
       display: inline-block; font-size: 1.45em; line-height: 1.35; color: #fff;
       text-shadow: 1px 1px 3px #000, -1px -1px 3px #000;
       background: rgba(0,0,0,.38); padding: 2px 10px; border-radius: 3px;
+      transition: opacity 0.15s ease;
     }}
+    .caption-line.prev {{ opacity: 0.62; }}
     #footer {{
       max-width: 1280px; margin: 10px auto 0; display: flex;
       justify-content: space-between; align-items: center;
@@ -175,15 +184,100 @@ def _make_player_html(video_id: str) -> str:
     const bar = document.getElementById('caption-bar');
     const status = document.getElementById('status');
 
-    function showLines(lines) {{
+    // Rate-limited two-line display.
+    //
+    // The ASR backend fires every ~0.5 s (sliding-window step). Rendering every
+    // update looks like flickering. Broadcast standards (BBC, Netflix) require a
+    // minimum of ~2 s per screen so viewers can finish reading before the text
+    // changes. We enforce that here:
+    //
+    //   - First cue of a new utterance shows immediately.
+    //   - Subsequent cues of the same utterance are buffered; the screen only
+    //     updates once MIN_STABLE_MS has elapsed since the last render.
+    //   - After DWELL_MS of silence the screen clears.
+    //   - splitLines word-wraps to MAX_CHARS and we show the last 2 lines
+    //     (most recently spoken words when text is longer than two lines).
+
+    let pendingText   = '';   // latest text from ASR (may not be shown yet)
+    let displayedText = '';   // text currently on screen
+    let lastRenderTime = 0;   // Date.now() of the last screen update
+    let renderTimer   = null; // handle for the deferred-update setTimeout
+    let clearTimer    = null; // handle for the silence-dwell setTimeout
+
+    const DWELL_MS      = 5000;  // clear after 5 s of silence
+    const MIN_STABLE_MS = 2000;  // minimum hold per screen (BBC/Netflix standard)
+    const MAX_CHARS     = 32;    // CEA-608 / CEA-708 line width
+
+    function splitLines(text) {{
+      const words = text.trim().split(/\\s+/);
+      const lines = [];
+      let line = '';
+      for (const word of words) {{
+        const candidate = line ? line + ' ' + word : word;
+        if (candidate.length <= MAX_CHARS) {{
+          line = candidate;
+        }} else {{
+          if (line) lines.push(line);
+          line = word;
+        }}
+      }}
+      if (line) lines.push(line);
+      return lines;
+    }}
+
+    function isContinuation(prev, next) {{
+      if (!prev) return false;
+      const anchor = prev.trim().split(/\\s+/).slice(-3).join(' ').toLowerCase();
+      return anchor.length > 2 && next.toLowerCase().includes(anchor);
+    }}
+
+    function doRender(text) {{
       bar.innerHTML = '';
-      lines.forEach(line => {{
+      splitLines(text).slice(-2).forEach(line => {{
         if (!line.trim()) return;
         const s = document.createElement('span');
         s.className = 'caption-line';
         s.textContent = line;
         bar.appendChild(s);
       }});
+      displayedText  = text;
+      lastRenderTime = Date.now();
+    }}
+
+    function tryUpdate() {{
+      if (!pendingText || pendingText === displayedText) return;
+      const wait = MIN_STABLE_MS - (Date.now() - lastRenderTime);
+      if (wait <= 0) {{
+        doRender(pendingText);
+      }} else if (!renderTimer) {{
+        renderTimer = setTimeout(() => {{ renderTimer = null; tryUpdate(); }}, wait);
+      }}
+    }}
+
+    function onCue(newText) {{
+      if (!newText.trim()) return;
+
+      if (clearTimer) {{ clearTimeout(clearTimer); clearTimer = null; }}
+
+      const isNew = !isContinuation(pendingText || displayedText, newText);
+      pendingText = newText;
+
+      if (isNew) {{
+        // New utterance — clear and render immediately
+        displayedText  = '';
+        lastRenderTime = 0;
+        if (renderTimer) {{ clearTimeout(renderTimer); renderTimer = null; }}
+      }}
+
+      tryUpdate();
+
+      clearTimer = setTimeout(() => {{
+        bar.innerHTML  = '';
+        pendingText = displayedText = '';
+        lastRenderTime = 0;
+        if (renderTimer) {{ clearTimeout(renderTimer); renderTimer = null; }}
+        clearTimer = null;
+      }}, DWELL_MS);
     }}
 
     const es = new EventSource('/events');
@@ -192,8 +286,8 @@ def _make_player_html(video_id: str) -> str:
       const d = JSON.parse(e.data);
       status.textContent = 'LIVE';
       status.className = 'live';
-      if (d.lines && d.lines.length) showLines(d.lines);
-      else if (d.text) showLines(d.text.split('\\n'));
+      const text = d.text || (d.lines || []).join(' ');
+      onCue(text);
     }});
 
     es.onopen = () => {{
@@ -227,6 +321,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;}}</style>
 class _Handler(BaseHTTPRequestHandler):
     writer: WebVTTWriter = None
     video_id: str = ''
+    session_active: bool = False   # set True when any session starts; cleared on stop
     start_callback: Optional[Callable[[str], None]] = None
     stop_callback: Optional[Callable[[], None]] = None
     _sse_clients: List = []
@@ -239,12 +334,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/':
-            now_playing = _NOW_PLAYING_BLOCK if self.video_id else ''
+            now_playing = _NOW_PLAYING_BLOCK if self.session_active else ''
             html = _LANDING_HTML.format(NOW_PLAYING=now_playing)
             self._send(html.encode(), 'text/html')
 
         elif self.path == '/player':
-            if not self.video_id:
+            if not self.session_active:
                 self._send(_NO_SESSION_HTML.encode(), 'text/html')
             else:
                 self._send(_make_player_html(self.video_id).encode(), 'text/html')
@@ -257,7 +352,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         elif self.path == '/status':
             payload = json.dumps({
-                'active': bool(self.video_id),
+                'active': self.session_active,
                 'video_id': self.video_id,
                 'cue_count': self.writer.cue_count,
             })
@@ -276,9 +371,10 @@ class _Handler(BaseHTTPRequestHandler):
             url = params.get('url', [''])[0].strip()
 
             if url:
-                # Set video_id NOW so /player renders correctly before the
-                # background thread finishes yt-dlp resolution.
+                # Set video_id and session_active NOW so /player renders
+                # correctly before the background thread finishes yt-dlp.
                 _Handler.video_id = _video_id_from_url(url)
+                _Handler.session_active = True
 
                 # Access via class, not self — prevents Python binding the
                 # function as an instance method and adding a spurious argument.
@@ -300,6 +396,7 @@ class _Handler(BaseHTTPRequestHandler):
             if cb:
                 threading.Thread(target=cb, daemon=True, name='session-stop').start()
             _Handler.video_id = ''
+            _Handler.session_active = False
             self.send_response(303)
             self.send_header('Location', '/')
             self.send_header('Content-Length', '0')
