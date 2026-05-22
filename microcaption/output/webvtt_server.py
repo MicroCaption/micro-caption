@@ -181,11 +181,11 @@ _LANDING_HTML = """<!DOCTYPE html>
   <p class="tagline">Real-time ASR captions &bull; CEA-608 / CEA-708 &bull; Whisper large-v3-turbo on GPU</p>
   <form method="POST" action="/start">
     <input type="url" name="url"
-      placeholder="https://www.youtube.com/watch?v=..."
+      placeholder="YouTube, Twitch, peg.tv, or any yt-dlp supported URL&hellip;"
       required autofocus>
     <button type="submit">&#9654;&nbsp; Caption</button>
   </form>
-  <p class="hint">Audio is pulled server-side and transcribed locally &mdash; no third-party APIs.</p>
+  <p class="hint">Audio is extracted server-side via yt-dlp &mdash; no third-party transcription APIs.</p>
   {NOW_PLAYING}
 </body>
 </html>
@@ -203,7 +203,65 @@ _NOW_PLAYING_BLOCK = """
 
 # ── Player page ───────────────────────────────────────────────────────────────
 
-def _make_player_html(video_id: str) -> str:
+def _make_player_html(video_id: str, source_url: str = '',
+                      source_type: str = 'youtube') -> str:
+    is_yt = (source_type == 'youtube')
+
+    # ── Parts that vary between YouTube and generic embeds ────────────────────
+    # These are plain Python strings substituted into the f-string below.
+    # Their { } are literal JS braces — they are NOT re-processed by the
+    # f-string escaping rules, so no {{ }} doubling is needed inside them.
+
+    yt_api_tag = (
+        '  <script src="https://www.youtube.com/iframe_api"></script>\n'
+        if is_yt else ''
+    )
+
+    if is_yt:
+        player_iframe = (
+            f'    <iframe id="yt-iframe"\n'
+            f'      src="https://www.youtube.com/embed/{video_id}'
+            f'?autoplay=1&mute=0&enablejsapi=1"\n'
+            f'      allow="autoplay; encrypted-media; picture-in-picture"\n'
+            f'      allowfullscreen>\n'
+            f'    </iframe>'
+        )
+    else:
+        safe_src = source_url.replace('"', '%22')
+        player_iframe = (
+            f'    <iframe id="source-iframe"\n'
+            f'      src="{safe_src}"\n'
+            f'      allow="autoplay; encrypted-media; picture-in-picture"\n'
+            f'      allowfullscreen>\n'
+            f'    </iframe>'
+        )
+
+    # YouTube IFrame API callbacks (omitted for non-YouTube — videoPaused stays
+    # false so the cue guard is a no-op).
+    yt_pause_js = (
+        '\n'
+        '    let ytPlayer;\n'
+        '    function onYouTubeIframeAPIReady() {\n'
+        "      ytPlayer = new YT.Player('yt-iframe', {\n"
+        '        events: { onStateChange: onPlayerStateChange }\n'
+        '      });\n'
+        '    }\n'
+        '    function onPlayerStateChange(event) {\n'
+        '      if (event.data === YT.PlayerState.PAUSED ||\n'
+        '          event.data === YT.PlayerState.BUFFERING) {\n'
+        '        videoPaused = true;\n'
+        "        if (clearTimer)  { clearTimeout(clearTimer);  clearTimer  = null; }\n"
+        "        if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }\n"
+        "        status.textContent = 'Paused';\n"
+        "        status.className   = 'waiting';\n"
+        '      } else if (event.data === YT.PlayerState.PLAYING) {\n'
+        '        videoPaused = false;\n'
+        "        status.textContent = 'Connected — waiting for speech…';\n"
+        "        status.className   = 'waiting';\n"
+        '      }\n'
+        '    }'
+    ) if is_yt else ''
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -254,8 +312,7 @@ def _make_player_html(video_id: str) -> str:
     #footer a {{ color: #333; text-decoration: none; }}
     #footer a:hover {{ color: #666; }}
   </style>
-  <script src="https://www.youtube.com/iframe_api"></script>
-</head>
+{yt_api_tag}</head>
 <body>
   <div id="topbar">
     <h1>MicroCaption &mdash; Live ASR</h1>
@@ -267,11 +324,7 @@ def _make_player_html(video_id: str) -> str:
     </div>
   </div>
   <div id="player-wrap">
-    <iframe id="yt-iframe"
-      src="https://www.youtube.com/embed/{video_id}?autoplay=1&mute=0&enablejsapi=1"
-      allow="autoplay; encrypted-media; picture-in-picture"
-      allowfullscreen>
-    </iframe>
+{player_iframe}
     <div id="caption-bar"></div>
   </div>
   <div id="footer">
@@ -303,31 +356,7 @@ def _make_player_html(video_id: str) -> str:
     let renderTimer   = null; // handle for the deferred-update setTimeout
     let clearTimer    = null; // handle for the silence-dwell setTimeout
     let videoPaused   = false;
-
-    // ── YouTube IFrame API ────────────────────────────────────────────────
-    // Wraps the existing iframe once the API script has loaded.
-    // On pause: freeze captions in place (cancel clear/render timers, drop
-    // incoming cues). On resume: accept new cues normally.
-    let ytPlayer;
-    function onYouTubeIframeAPIReady() {{
-      ytPlayer = new YT.Player('yt-iframe', {{
-        events: {{ onStateChange: onPlayerStateChange }}
-      }});
-    }}
-    function onPlayerStateChange(event) {{
-      if (event.data === YT.PlayerState.PAUSED ||
-          event.data === YT.PlayerState.BUFFERING) {{
-        videoPaused = true;
-        if (clearTimer)  {{ clearTimeout(clearTimer);  clearTimer  = null; }}
-        if (renderTimer) {{ clearTimeout(renderTimer); renderTimer = null; }}
-        status.textContent = 'Paused';
-        status.className   = 'waiting';
-      }} else if (event.data === YT.PlayerState.PLAYING) {{
-        videoPaused = false;
-        status.textContent = 'Connected — waiting for speech…';
-        status.className   = 'waiting';
-      }}
-    }}
+{yt_pause_js}
 
     const DWELL_MS      = 5000;  // clear after 5 s of silence
     const MIN_STABLE_MS = 2000;  // minimum hold per screen (BBC/Netflix standard)
@@ -452,6 +481,9 @@ class _Handler(BaseHTTPRequestHandler):
     stop_callback: Optional[Callable[[], None]] = None
     _sse_clients: List = []
     _sse_lock: threading.Lock = None
+    # source info
+    source_url: str = ''
+    source_type: str = 'youtube'   # 'youtube' | 'stream'
     # dashboard / monitoring
     metrics_provider: Optional[Callable[[], Dict]] = None
     config_snapshot: Dict = {}
@@ -473,7 +505,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not self.session_active:
                 self._send(_NO_SESSION_HTML.encode(), 'text/html')
             else:
-                self._send(_make_player_html(self.video_id).encode(), 'text/html')
+                html = _make_player_html(
+                    self.video_id, self.source_url, self.source_type)
+                self._send(html.encode(), 'text/html')
 
         elif self.path == '/events':
             self._sse_stream()
@@ -516,9 +550,11 @@ class _Handler(BaseHTTPRequestHandler):
             url = params.get('url', [''])[0].strip()
 
             if url:
-                # Set video_id and session_active NOW so /player renders
+                # Set source info and session_active NOW so /player renders
                 # correctly before the background thread finishes yt-dlp.
-                _Handler.video_id = _video_id_from_url(url)
+                _Handler.video_id    = _video_id_from_url(url)
+                _Handler.source_url  = url
+                _Handler.source_type = 'youtube' if _Handler.video_id else 'stream'
                 _Handler.session_active = True
                 _Handler._session_start = time.monotonic()
 
@@ -555,7 +591,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _page_dashboard(self) -> str:
         if self.session_active:
-            vid_url = f'https://youtube.com/watch?v={self.video_id}' if self.video_id else '—'
+            vid_url = self.source_url or '—'
             session_block = (
                 f'<div class="card">'
                 f'<span class="dot dot-live"></span>'
@@ -814,6 +850,11 @@ class WebVTTServer:
 
     def set_video_id(self, video_id: str) -> None:
         _Handler.video_id = video_id
+
+    def set_source(self, url: str, video_id: str, source_type: str) -> None:
+        _Handler.source_url  = url
+        _Handler.video_id    = video_id
+        _Handler.source_type = source_type
 
     def start(self) -> None:
         self._server = _ThreadedHTTPServer((self._host, self._port), _Handler)

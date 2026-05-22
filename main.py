@@ -172,11 +172,12 @@ def main() -> None:
             asr_pipeline._last_text = ''
 
     def start_session(url: str) -> None:
-        """Stop any running YouTube adapter and start a fresh one for the given URL."""
+        """Stop any running adapter and start a fresh one for the given URL."""
         _stop_current()
 
         video_id = _extract_video_id(url)
-        print(f'[Session] Starting new session — video_id={video_id!r}')
+        source_type = 'youtube' if video_id else 'stream'
+        print(f'[Session] Starting — type={source_type} url={url[:80]}')
 
         # Reset state for the new session
         vtt_writer.reset()
@@ -185,7 +186,7 @@ def main() -> None:
 
         # Update the player page immediately so the redirect lands on the right video
         if webvtt_server:
-            webvtt_server.set_video_id(video_id)
+            webvtt_server.set_source(url, video_id, source_type)
 
         # Build and start the new adapter
         yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
