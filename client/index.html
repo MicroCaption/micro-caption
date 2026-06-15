@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MicroCaption &mdash; Post-Broadcast Captioning</title>
+  <link rel="stylesheet" href="/css/shared.css">
+  <link rel="stylesheet" href="/css/landing.css">
+</head>
+<body>
+<nav class="pub-nav">
+  <a href="/" class="nav-logo">MicroCaption</a>
+  <a href="/pricing.html" class="nav-link">Pricing</a>
+  <a href="/standards.html" class="nav-link">Standards</a>
+  <a href="/watch.html" class="nav-link">Have a code?</a>
+  <a href="/login" class="nav-link">Log in</a>
+</nav>
+
+<div id="error-area"></div>
+
+<div class="hero">
+  <div class="hero-eyebrow">Post-broadcast captioning service</div>
+  <h1>Closed captions for any live media stream</h1>
+  <p class="hero-desc">
+    MicroCaption is a low-cost captioning service for public broadcast
+    networks and media operators who need to add CEA-608 and CEA-708
+    closed captions to existing live streams &mdash; without the cost
+    of traditional captioning bureaux or dedicated hardware encoders.
+  </p>
+  <div class="hero-actions">
+    <a href="/login" class="btn-cta">Log In &rarr;</a>
+    <a href="/pricing.html" class="btn-ghost">View pricing</a>
+  </div>
+</div>
+
+<div class="landing-section">
+  <p class="section-label">What&rsquo;s included</p>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h3>Sub-2s latency</h3>
+      <p>GPU-accelerated ASR (Whisper / NVIDIA Parakeet) runs server-side and delivers caption packets in under two seconds end-to-end.</p>
+    </div>
+    <div class="feature-card">
+      <h3>CEA-608 &amp; CEA-708</h3>
+      <p>Byte-accurate closed-caption packets for FCC Part 79 compliance. Drop-in replacement for legacy hardware captioning encoders.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Any yt-dlp stream</h3>
+      <p>Submit a YouTube, Twitch, peg.tv, or any yt-dlp-supported URL. Audio is pulled server-side &mdash; no browser plugin required.</p>
+    </div>
+    <div class="feature-card">
+      <h3>WebVTT delivery</h3>
+      <p>Live captions streamed to browsers via Server-Sent Events. Download per-session WebVTT files for archive or post-production.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Multiple concurrent streams</h3>
+      <p>One GPU instance handles several live feeds simultaneously. Each stream is isolated with its own ASR pipeline and caption track.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Low cost</h3>
+      <p>Runs on a single NVIDIA GPU server. No per-minute transcription fees, no third-party APIs &mdash; just your own infrastructure.</p>
+    </div>
+  </div>
+</div>
+
+<div class="landing-section">
+  <p class="section-label">Who it&rsquo;s for</p>
+  <div class="audience-grid">
+    <div class="audience-card">
+      <h3>Public broadcast networks</h3>
+      <p>Add real-time closed captions to live programme feeds without expensive dedicated captioning hardware or per-minute service fees.</p>
+    </div>
+    <div class="audience-card">
+      <h3>Community &amp; access television</h3>
+      <p>Meet FCC and local franchise captioning requirements on a municipal or non-profit budget.</p>
+    </div>
+    <div class="audience-card">
+      <h3>Streaming operators</h3>
+      <p>Attach CEA-708 packets and WebVTT tracks to any yt-dlp-supported stream, including YouTube Live, Twitch, and RTMP endpoints.</p>
+    </div>
+    <div class="audience-card">
+      <h3>Post-production &amp; archiving</h3>
+      <p>Re-caption existing recordings or live replays and export standards-compliant WebVTT files for distribution.</p>
+    </div>
+  </div>
+</div>
+
+<footer class="landing-footer">
+  <span>&copy; MicroCaption</span>
+  <span>
+    <a href="/pricing.html">Pricing</a>
+    &ensp;&middot;&ensp;
+    <a href="/standards.html">Standards</a>
+    &ensp;&middot;&ensp;
+    <a href="/login">Log in</a>
+  </span>
+</footer>
+
+<script>
+  const qs = new URLSearchParams(window.location.search);
+  const err = qs.get('error');
+  if (err) {
+    const msg = err === 'unauthorized'
+      ? 'Access denied &mdash; your account is not on the allowed list.'
+      : 'Authentication failed &mdash; please try again.';
+    document.getElementById('error-area').innerHTML =
+      `<div class="error-banner">${msg}</div>`;
+  }
+</script>
+</body>
+</html>

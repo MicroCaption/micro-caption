@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MicroCaption &mdash; Queue</title>
+  <link rel="stylesheet" href="/css/shared.css">
+</head>
+<body>
+<nav>
+  <a href="/" class="nav-logo">MicroCaption</a>
+  <a href="/dashboard.html" class="nav-link">Streams</a>
+  <a href="/queue.html" class="nav-link active">Queue</a>
+  <a href="/monitor.html" class="nav-link">Monitor</a>
+  <a href="/config.html" class="nav-link">Config</a>
+  <a href="/logs.html" class="nav-link">Logs</a>
+  <a href="/logout" class="nav-link">Log out</a>
+</nav>
+<main>
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">
+    <h2>Queue</h2>
+    <span id="queue-count" style="color:#333;font-size:.78em">— items</span>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Added</th><th>URL</th><th>Status</th><th>By</th></tr></thead>
+      <tbody id="queue-tbody">
+        <tr><td colspan="4" class="stub">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h2 style="margin-top:24px">Add to Queue</h2>
+  <div class="card">
+    <form id="queue-form" class="row">
+      <input type="url" id="queue-url-input" placeholder="YouTube, Twitch, peg.tv, or any yt-dlp URL…" required>
+      <button id="queue-btn" class="btn-primary" type="submit">&#43;&nbsp;Queue</button>
+    </form>
+  </div>
+  <p class="hint" style="margin-top:8px">Queued videos will be processed in order when a session slot is available.</p>
+</main>
+<script src="/js/config.js"></script>
+<script>
+function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function loadQueue(){
+  fetch(API+'/api/queue').then(r=>r.json()).then(items=>{
+    document.getElementById('queue-count').textContent=items.length+' item'+(items.length===1?'':'s');
+    const rows=items.map(item=>`<tr>
+      <td class="ts">${escH(item.added_at.slice(0,19).replace('T',' '))}</td>
+      <td style="color:#555">${escH(item.url.length>72?item.url.slice(0,72)+'…':item.url)}</td>
+      <td style="color:#3a9a4a;font-size:.78em">${escH(item.status.toUpperCase())}</td>
+      <td class="ts">${escH(item.added_by)}</td>
+    </tr>`).join('');
+    document.getElementById('queue-tbody').innerHTML=rows||
+      '<tr><td colspan="4" class="stub">Queue is empty.</td></tr>';
+  });
+}
+loadQueue();
+const qf=document.getElementById('queue-form');
+if(qf){qf.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const inp=document.getElementById('queue-url-input');
+  const btn=document.getElementById('queue-btn');
+  const url=inp.value.trim(); if(!url)return;
+  btn.disabled=true; btn.textContent='Adding…';
+  try{
+    const r=await fetch(API+'/api/queue',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'url='+encodeURIComponent(url)});
+    const d=await r.json();
+    if(d.id){inp.value='';loadQueue();}
+    else if(d.error){alert('Error: '+d.error);}
+  }catch(ex){alert('Request failed: '+ex);}
+  finally{btn.disabled=false;btn.textContent='+ Queue';}
+});}
+</script>
+</body>
+</html>

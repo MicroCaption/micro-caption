@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MicroCaption &mdash; Enter Code</title>
+  <link rel="stylesheet" href="/css/shared.css">
+  <link rel="stylesheet" href="/css/landing.css">
+</head>
+<body>
+<nav class="pub-nav">
+  <a href="/" class="nav-logo">MicroCaption</a>
+</nav>
+
+<div id="error-area"></div>
+
+<div class="watch-entry">
+  <h1 style="color:#ccc;font-size:1.5em;margin-bottom:6px">Enter your caption code</h1>
+  <p class="watch-desc">Type the 6-digit code shown in your meeting or event to view live captions on this device.</p>
+  <input class="code-input" type="text" id="code-input"
+    inputmode="numeric" maxlength="6" pattern="[0-9]{6}"
+    placeholder="000000" autocomplete="off" autofocus>
+</div>
+
+<script>
+  const qs = new URLSearchParams(window.location.search);
+  if (qs.get('error') === 'invalid') {
+    document.getElementById('error-area').innerHTML =
+      '<div class="error-banner">Invalid code &mdash; please check and try again.</div>';
+  }
+  const inp = document.getElementById('code-input');
+  inp.addEventListener('input', () => {
+    if (/^\d{6}$/.test(inp.value)) {
+      window.location.href = '/watch-viewer.html?code=' + inp.value;
+    }
+  });
+</script>
+</body>
+</html>
