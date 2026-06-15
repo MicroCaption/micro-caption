@@ -17,10 +17,43 @@ Environment variable overrides (prefix MC_):
   MC_OUTPUT_WEBVTT_PORT   8765
 """
 
-import argparse
 import os
-import signal
 import sys
+
+# ── CUDA library discovery ────────────────────────────────────────────────────
+# ctranslate2 dlopens libcublas.so.12 and friends at inference time.  When
+# nvidia-*-cu12 wheels are installed inside the venv (not system-wide) their
+# lib dirs must be on LD_LIBRARY_PATH before any dlopen call.  We set it here,
+# at the very top before any imports, and re-exec so the updated environment is
+# visible to the dynamic linker from process start.
+def _bootstrap_cuda_libs() -> None:
+    if os.environ.get('_MC_CUDA_BOOTSTRAP'):
+        return  # already re-exec'd — don't loop
+    lib_dirs = []
+    for sp in sys.path:
+        nvidia_dir = os.path.join(sp, 'nvidia')
+        if not os.path.isdir(nvidia_dir):
+            continue
+        for root, dirs, _ in os.walk(nvidia_dir):
+            if 'lib' in dirs:
+                lib_dirs.append(os.path.join(root, 'lib'))
+        break
+    if not lib_dirs:
+        return
+    existing = os.environ.get('LD_LIBRARY_PATH', '')
+    new_path = ':'.join(lib_dirs) + (':' + existing if existing else '')
+    if existing == new_path:
+        return
+    os.environ['LD_LIBRARY_PATH'] = new_path
+    os.environ['_MC_CUDA_BOOTSTRAP'] = '1'
+    os.environ['PYTHONUNBUFFERED'] = '1'
+    os.execve(sys.executable, [sys.executable, '-u'] + sys.argv, os.environ)
+
+_bootstrap_cuda_libs()
+# ─────────────────────────────────────────────────────────────────────────────
+
+import argparse
+import signal
 import threading
 import time
 import urllib.parse
@@ -47,10 +80,14 @@ def load_config(path: str) -> dict:
 
 def _apply_env_overrides(cfg: dict) -> None:
     _overrides = {
-        'MC_IO_ADAPTER':         ('io', 'adapter'),
-        'MC_ASR_PRIMARY':        ('asr', 'primary'),
-        'MC_OUTPUT_WEBVTT_PORT': ('output', 'webvtt', 'port'),
-        'MC_ALSA_DEVICE':        ('io', 'alsa', 'device'),
+        'MC_IO_ADAPTER':           ('io', 'adapter'),
+        'MC_ASR_PRIMARY':          ('asr', 'primary'),
+        'MC_OUTPUT_WEBVTT_PORT':   ('output', 'webvtt', 'port'),
+        'MC_ALSA_DEVICE':          ('io', 'alsa', 'device'),
+        'MC_AUTH_CLIENT_ID':       ('auth', 'google_client_id'),
+        'MC_AUTH_CLIENT_SECRET':   ('auth', 'google_client_secret'),
+        'MC_AUTH_SESSION_SECRET':  ('auth', 'session_secret'),
+        'MC_AUTH_REDIRECT_URI':    ('auth', 'redirect_uri'),
     }
     for env_key, path in _overrides.items():
         val = os.environ.get(env_key)
@@ -282,6 +319,7 @@ def main() -> None:
     if webvtt_cfg.get('enabled', True):
         webvtt_server = WebVTTServer(
             webvtt_cfg,
+            auth_cfg=cfg.get('auth', {}),
             start_callback=start_session,
             stop_callback=stop_session,
             metrics_provider=_metrics_provider,

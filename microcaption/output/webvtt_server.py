@@ -17,10 +17,19 @@ HTTP server — endpoints:
   GET  /status          — Backward-compat status JSON
 """
 
+import base64
+import datetime
+import hashlib
+import hmac
 import json
+import re
+import secrets
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
+import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -59,8 +68,9 @@ nav {
 }
 .nav-logo {
   color: #3a3a3a; letter-spacing: 0.14em; text-transform: uppercase;
-  font-size: 0.8em; margin-right: auto;
+  font-size: 0.8em; margin-right: auto; text-decoration: none;
 }
+.nav-logo:hover { color: #666; }
 .nav-link {
   color: #555; text-decoration: none; padding: 5px 11px;
   border-radius: 4px; font-size: 0.8em; transition: color .15s;
@@ -165,27 +175,37 @@ input[type=url]::placeholder { color: #2c2c2c; }
   text-align: center; padding: 50px 20px;
 }
 .hint { color: #2c2c2c; font-size: 0.72em; }
+.session-code { font-size:1.5em; letter-spacing:.2em; color:#ccc; font-family:monospace; display:block; margin-bottom:6px; }
+.watch-qr { width:88px; height:88px; border-radius:4px; display:block; }
+.card-watch-info { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
 """
 
 
-def _nav(active: str) -> str:
-    tabs = [('Streams', '/'), ('Monitor', '/monitor'),
-            ('Config', '/config'), ('Logs', '/logs')]
+def _nav(active: str, email: 'str | None' = None) -> str:
+    if email:
+        tabs = [('Streams', '/dashboard'), ('Queue', '/queue'),
+                ('Monitor', '/monitor'), ('Config', '/config'), ('Logs', '/logs')]
+        right = (f'<span style="color:#333;font-size:.72em;padding:0 8px">{_esc(email)}</span>'
+                 f'<a href="/logout" class="nav-link">Log out</a>')
+    else:
+        tabs = []
+        right = '<a href="/login" class="nav-link">Log in</a>'
     links = ''.join(
         f'<a href="{h}" class="nav-link'
         f'{" active" if lbl.lower() == active else ""}">{lbl}</a>'
         for lbl, h in tabs
     )
-    return (f'<nav><span class="nav-logo">MicroCaption</span>'
-            f'{links}</nav>')
+    return (f'<nav><a href="/" class="nav-logo">MicroCaption</a>'
+            f'{links}{right}</nav>')
 
 
-def _wrap(title: str, active: str, body: str, script: str = '') -> str:
+def _wrap(title: str, active: str, body: str, script: str = '',
+          email: 'str | None' = None) -> str:
     st = f'<script>{script}</script>' if script else ''
     return (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<title>MicroCaption — {title}</title>'
             f'<style>{_SHARED_CSS}</style></head><body>'
-            f'{_nav(active)}'
+            f'{_nav(active, email)}'
             f'<main>{body}</main>{st}</body></html>')
 
 
@@ -206,24 +226,68 @@ function cardHtml(s){
   const statusLbl=s.status.toUpperCase();
   const urlD=s.url.length>64?s.url.slice(0,64)+'…':s.url;
   const cueHtml=s.last_cue
-    ?`<div class="card-cue">“${escH(s.last_cue.slice(0,110)+(s.last_cue.length>110?'…':''))}”</div>`
-    :'<div class="card-cue idle">No captions yet…</div>';
-  const errHtml=s.error?`<div style="color:#7a2a2a;font-size:.72em;margin-bottom:8px">${escH(s.error)}</div>`:'';
-  return `<div class="session-card ${escH(s.status)}">
-<div class="card-header">
-  <span class="dot ${dotCls}"></span>
-  <span class="card-status">${statusLbl}</span>
-  <span class="card-id">${escH(s.id)}</span>
+    ?`<div class=”card-cue”>”${escH(s.last_cue.slice(0,110)+(s.last_cue.length>110?'…':''))}”</div>`
+    :'<div class=”card-cue idle”>No captions yet…</div>';
+  const errHtml=s.error?`<div style=”color:#7a2a2a;font-size:.72em;margin-bottom:8px”>${escH(s.error)}</div>`:'';
+  const watchUrl=s.code?window.location.origin+'/watch/'+escH(s.code):'';
+  const qrSrc=s.code?'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(watchUrl)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4':'';
+  const codeHtml=s.code?`<div class=”card-watch-info”><span class=”session-code”>${escH(s.code)}</span>${qrSrc?`<img class=”watch-qr” src=”${qrSrc}” alt=”QR”>`:''}
+</div>`:'';
+  const viewerLink=s.code?`<a href=”/watch/${escH(s.code)}” target=”_blank” rel=”noopener” class=”btn-watch”>&#128241;&nbsp;Viewer</a>`:'';
+  return `<div class=”session-card ${escH(s.status)}”>
+<div class=”card-header”>
+  <span class=”dot ${dotCls}”></span>
+  <span class=”card-status”>${statusLbl}</span>
+  <span class=”card-id”>${escH(s.id)}</span>
   ${badge}
-  <button class="btn-stop" onclick="stopSess('${escH(s.id)}')">&#9632;</button>
+  <button class=”btn-stop” onclick=”stopSess('${escH(s.id)}')”>&#9632;</button>
 </div>
-<div class="card-url">${escH(urlD)}</div>
-<div class="card-stats">${fmtUp(s.uptime_s)}&nbsp;&middot;&nbsp;${s.cue_count}&nbsp;cues</div>
+<div class=”card-url”>${escH(urlD)}</div>
+<div class=”card-stats”>${fmtUp(s.uptime_s)}&nbsp;&middot;&nbsp;${s.cue_count}&nbsp;cues</div>
 ${errHtml}${cueHtml}
-<div class="card-footer">
-  <a href="/player/${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>
+<div class=”card-footer”>
+  ${codeHtml}
+  <div style=”display:flex;gap:8px;align-items:center”>
+    ${viewerLink}
+    <a href=”/player/${escH(s.id)}” target=”_blank” rel=”noopener” class=”btn-watch”>&#9654;&nbsp;Watch live</a>
+  </div>
 </div>
 </div>`;
+}
+// Per-session card elements survive across polling refreshes so QR images don't flicker.
+const _cards={};
+function _qrSrc(code){
+  const url=window.location.origin+'/watch/'+encodeURIComponent(code);
+  return'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(url)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4';
+}
+function _injectCard(grid,s){
+  const tmp=document.createElement('div');
+  tmp.innerHTML=cardHtml(s);
+  const card=tmp.firstElementChild;
+  const qrImg=card.querySelector('.watch-qr');
+  if(qrImg&&s.code)qrImg.src=_qrSrc(s.code);
+  grid.appendChild(card);
+  _cards[s.id]=card;
+}
+function _updateCard(card,s){
+  const dot=card.querySelector('.dot');
+  const lbl=card.querySelector('.card-status');
+  const dotCls=s.status==='live'?'dot-live':s.status==='starting'?'dot-starting':'dot-error';
+  if(dot)dot.className='dot '+dotCls;
+  if(lbl)lbl.textContent=s.status.toUpperCase();
+  const statsEl=card.querySelector('.card-stats');
+  if(statsEl)statsEl.innerHTML=fmtUp(s.uptime_s)+'&nbsp;&middot;&nbsp;'+s.cue_count+'&nbsp;cues';
+  const cueEl=card.querySelector('.card-cue');
+  if(cueEl){
+    if(s.last_cue){
+      const t=s.last_cue.slice(0,110)+(s.last_cue.length>110?'\u2026':'');
+      cueEl.textContent='"'+t+'"';
+      cueEl.classList.remove('idle');
+    }else{
+      cueEl.textContent='No captions yet\u2026';
+      cueEl.classList.add('idle');
+    }
+  }
 }
 async function refresh(){
   try{
@@ -233,10 +297,31 @@ async function refresh(){
     if(cnt)cnt.textContent=data.length+' active';
     if(!wrap)return;
     if(!data.length){
-      wrap.innerHTML='<div class="sessions-grid"><div class="empty-state">No active streams — add one below.</div></div>';
+      wrap.innerHTML='<div class="sessions-grid"><div class="empty-state">No active streams \u2014 add one below.</div></div>';
+      for(const id of Object.keys(_cards))delete _cards[id];
       return;
     }
-    wrap.innerHTML='<div class="sessions-grid">'+data.map(cardHtml).join('')+'</div>';
+    let grid=wrap.querySelector('.sessions-grid');
+    if(!grid){grid=document.createElement('div');grid.className='sessions-grid';wrap.innerHTML='';wrap.appendChild(grid);}
+    // Adopt server-rendered cards so we don't create duplicates.
+    for(const s of data){
+      if(!_cards[s.id]){
+        const el=document.getElementById('sess-'+s.id);
+        if(el){
+          _cards[s.id]=el;
+          const qi=el.querySelector('.watch-qr');
+          if(qi&&!qi.src&&s.code)qi.src=_qrSrc(s.code);
+        }
+      }
+    }
+    const liveIds=new Set(data.map(s=>s.id));
+    for(const id of Object.keys(_cards)){
+      if(!liveIds.has(id)){_cards[id].remove();delete _cards[id];}
+    }
+    for(const s of data){
+      if(_cards[s.id]){_updateCard(_cards[s.id],s);}
+      else{_injectCard(grid,s);}
+    }
   }catch(e){}
 }
 async function stopSess(id){
@@ -278,8 +363,10 @@ setInterval(refresh,2000);
 # ── Player page ───────────────────────────────────────────────────────────────
 
 def _make_player_html(video_id: str, source_url: str,
-                      source_type: str, session_id: str) -> str:
+                      source_type: str, session_id: str,
+                      mode: str = 'live') -> str:
     is_yt = (source_type == 'youtube')
+    is_replay = (mode == 'replay' and is_yt)
 
     yt_api_tag = (
         '  <script src="https://www.youtube.com/iframe_api"></script>\n'
@@ -305,13 +392,40 @@ def _make_player_html(video_id: str, source_url: str,
             f'    </iframe>'
         )
 
+    # Topbar mode button (YouTube only)
+    if is_yt:
+        if is_replay:
+            mode_btn = f'<button id="jump-live-btn" onclick="jumpToLive()">&#9197;&nbsp;Jump to live</button>'
+        else:
+            mode_btn = f'<a href="/player/{session_id}?mode=replay">&#9198;&nbsp;From beginning</a>'
+    else:
+        mode_btn = ''
+
+    # onReady body: seek to live or init replay
+    if is_replay:
+        on_ready_body = '      initReplay();\n'
+    else:
+        on_ready_body = (
+            '      try {\n'
+            f'        const r = await fetch("/api/session/{session_id}/position");\n'
+            '        const d = await r.json();\n'
+            '        if (d.current_time > 2) { event.target.seekTo(d.current_time, true); }\n'
+            '      } catch(e) {}\n'
+        )
+
     yt_pause_js = (
         '\n'
         '    let ytPlayer;\n'
         '    function onYouTubeIframeAPIReady() {\n'
         "      ytPlayer = new YT.Player('yt-iframe', {\n"
-        '        events: { onStateChange: onPlayerStateChange }\n'
+        '        events: {\n'
+        '          onReady: _mcOnPlayerReady,\n'
+        '          onStateChange: onPlayerStateChange\n'
+        '        }\n'
         '      });\n'
+        '    }\n'
+        '    async function _mcOnPlayerReady(event) {\n'
+        + on_ready_body +
         '    }\n'
         '    function onPlayerStateChange(event) {\n'
         '      if (event.data === YT.PlayerState.PAUSED ||\n'
@@ -329,6 +443,68 @@ def _make_player_html(video_id: str, source_url: str,
         '    }'
     ) if is_yt else ''
 
+    # Replay mode JS block
+    if is_replay:
+        replay_js = (
+            '\n'
+            f'    const allCues = [];\n'
+            f'    let replayTimer = null;\n'
+            f'\n'
+            f'    async function initReplay() {{\n'
+            f'      try {{\n'
+            f'        const r = await fetch("/api/session/{session_id}/cues");\n'
+            f'        const cues = await r.json();\n'
+            f'        allCues.push(...cues);\n'
+            f'      }} catch(e) {{}}\n'
+            f'      replayTimer = setInterval(replayTick, 250);\n'
+            f'    }}\n'
+            f'\n'
+            f'    function replayTick() {{\n'
+            f'      if (!ytPlayer || typeof ytPlayer.getCurrentTime !== "function") return;\n'
+            f'      const t = ytPlayer.getCurrentTime();\n'
+            f'      let found = null;\n'
+            f'      for (let i = allCues.length - 1; i >= 0; i--) {{\n'
+            f'        if (allCues[i].start <= t) {{ found = allCues[i]; break; }}\n'
+            f'      }}\n'
+            f'      if (found && found.text !== pendingText) {{\n'
+            f'        onCue(found.text);\n'
+            f'      }} else if (!found && pendingText) {{\n'
+            f'        bar.innerHTML = "";\n'
+            f'        pendingText = displayedText = "";\n'
+            f'      }}\n'
+            f'    }}\n'
+            f'\n'
+            f'    async function jumpToLive() {{\n'
+            f'      if (replayTimer) {{ clearInterval(replayTimer); replayTimer = null; }}\n'
+            f'      window.location.href = "/player/{session_id}";\n'
+            f'    }}\n'
+        )
+    else:
+        replay_js = ''
+
+    # SSE cue handler: live vs replay
+    if is_replay:
+        sse_cue_handler = (
+            f"    es.addEventListener('cue', e => {{\n"
+            f'      const d = JSON.parse(e.data);\n'
+            f"      status.textContent = 'LIVE';\n"
+            f"      status.className = 'live';\n"
+            f'      const text = d.text || (d.lines || []).join(" ");\n'
+            f'      allCues.push({{start: parseFloat(d.start), end: parseFloat(d.end), text}});\n'
+            f'    }});\n'
+        )
+    else:
+        sse_cue_handler = (
+            f"    es.addEventListener('cue', e => {{\n"
+            f'      if (videoPaused) return;\n'
+            f'      const d = JSON.parse(e.data);\n'
+            f"      status.textContent = 'LIVE';\n"
+            f"      status.className = 'live';\n"
+            f'      const text = d.text || (d.lines || []).join(" ");\n'
+            f'      onCue(text);\n'
+            f'    }});\n'
+        )
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -344,8 +520,10 @@ def _make_player_html(video_id: str, source_url: str,
     #topbar h1 {{ color: #555; letter-spacing: 0.12em; text-transform: uppercase; font-size: 1em; }}
     #topbar a {{ color: #555; text-decoration: none; border: 1px solid #2a2a2a; padding: 5px 12px; border-radius: 4px; }}
     #topbar a:hover {{ color: #aaa; border-color: #444; }}
-    #stop-btn {{ background: none; border: 1px solid #5a2020; color: #844; font-family: monospace; font-size: 1em; padding: 5px 12px; border-radius: 4px; cursor: pointer; }}
-    #stop-btn:hover {{ border-color: #a44; color: #c66; }}
+    #stop-btn, #jump-live-btn {{ background: none; border: 1px solid #5a2020; color: #844; font-family: monospace; font-size: 1em; padding: 5px 12px; border-radius: 4px; cursor: pointer; }}
+    #stop-btn:hover, #jump-live-btn:hover {{ border-color: #a44; color: #c66; }}
+    #jump-live-btn {{ border-color: #2a5a2a; color: #484; }}
+    #jump-live-btn:hover {{ border-color: #4a8a4a; color: #6a6; }}
     #player-wrap {{
       position: relative; width: 100%; max-width: 1280px; margin: 0 auto;
       background: #000; border-radius: 6px; overflow: hidden;
@@ -384,7 +562,8 @@ def _make_player_html(video_id: str, source_url: str,
   <div id="topbar">
     <h1>MicroCaption — Live ASR</h1>
     <div style="display:flex;gap:8px">
-      <a href="/">← Control room</a>
+      <a href="/dashboard">← Control room</a>
+      {mode_btn}
       <button id="stop-btn" onclick="stopSession()">&#9632; Stop</button>
     </div>
   </div>
@@ -403,7 +582,7 @@ def _make_player_html(video_id: str, source_url: str,
 
     async function stopSession() {{
       await fetch('/stop/{session_id}', {{method:'POST'}});
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     }}
 
     let pendingText   = '';
@@ -413,7 +592,7 @@ def _make_player_html(video_id: str, source_url: str,
     let clearTimer    = null;
     let videoPaused   = false;
 {yt_pause_js}
-
+{replay_js}
     const DWELL_MS      = 5000;
     const MIN_STABLE_MS = 2000;
     const MAX_CHARS     = 32;
@@ -486,15 +665,7 @@ def _make_player_html(video_id: str, source_url: str,
 
     const es = new EventSource('/events/{session_id}');
 
-    es.addEventListener('cue', e => {{
-      if (videoPaused) return;
-      const d = JSON.parse(e.data);
-      status.textContent = 'LIVE';
-      status.className = 'live';
-      const text = d.text || (d.lines || []).join(' ');
-      onCue(text);
-    }});
-
+{sse_cue_handler}
     es.onopen = () => {{
       status.textContent = 'Connected — waiting for speech…';
       status.className = 'waiting';
@@ -509,17 +680,296 @@ def _make_player_html(video_id: str, source_url: str,
 </html>
 """
 
-
 _NO_SESSION_HTML = """<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>MicroCaption</title>
-<meta http-equiv="refresh" content="2;url=/">
+<meta http-equiv="refresh" content="2;url=/dashboard">
 <style>body{{background:#0d0d0d;color:#555;font-family:monospace;
 display:flex;align-items:center;justify-content:center;height:100vh;}}</style>
 </head>
 <body>Session not found &mdash; redirecting&hellip;</body>
 </html>
 """
+
+
+# ── Landing page styles ───────────────────────────────────────────────────────
+
+_LANDING_CSS = """
+/* ── Public nav ────────────────────────────────────────────────────────────── */
+.pub-nav {
+  display: flex; align-items: center; gap: 2px;
+  padding: 14px 28px; border-bottom: 1px solid #141414;
+}
+.pub-nav .nav-logo { margin-right: auto; font-size: 0.88em; }
+/* ── Hero ──────────────────────────────────────────────────────────────────── */
+.hero {
+  padding: 100px 24px 80px;
+  display: flex; flex-direction: column;
+  align-items: center; text-align: center;
+}
+.hero-eyebrow {
+  color: #3a9a4a; font-size: 0.72em; letter-spacing: 0.18em;
+  text-transform: uppercase; margin-bottom: 18px;
+}
+.hero h1 {
+  font-size: 3em; color: #ddd; letter-spacing: 0.04em;
+  margin-bottom: 20px; max-width: 700px; line-height: 1.15;
+}
+.hero-desc {
+  color: #555; font-size: 0.9em; line-height: 1.75;
+  max-width: 560px; margin-bottom: 40px;
+}
+.hero-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.btn-cta {
+  display: inline-block; padding: 12px 32px; background: #2a7a3a;
+  border-radius: 5px; color: #fff; text-decoration: none;
+  font-family: monospace; font-size: 0.9em; letter-spacing: 0.04em;
+}
+.btn-cta:hover { background: #3a9a4a; }
+.btn-ghost {
+  display: inline-block; padding: 12px 24px;
+  border: 1px solid #2a2a2a; border-radius: 5px; color: #555;
+  text-decoration: none; font-family: monospace; font-size: 0.9em;
+}
+.btn-ghost:hover { border-color: #444; color: #aaa; }
+/* ── Feature grid ──────────────────────────────────────────────────────────── */
+.landing-section {
+  max-width: 960px; margin: 0 auto; padding: 0 24px 80px;
+}
+.section-label {
+  color: #2a2a2a; font-size: 0.68em; letter-spacing: 0.16em;
+  text-transform: uppercase; margin-bottom: 24px; text-align: center;
+}
+.feature-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+}
+@media (max-width: 640px) { .feature-grid { grid-template-columns: 1fr; } }
+.feature-card {
+  background: #0f0f0f; border: 1px solid #1c1c1c;
+  border-radius: 5px; padding: 22px 20px;
+}
+.feature-card h3 {
+  color: #3a9a4a; font-size: 0.73em; letter-spacing: 0.1em;
+  text-transform: uppercase; margin-bottom: 10px;
+}
+.feature-card p { color: #444; font-size: 0.81em; line-height: 1.65; }
+/* ── Who it's for ──────────────────────────────────────────────────────────── */
+.audience-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;
+}
+@media (max-width: 540px) { .audience-grid { grid-template-columns: 1fr; } }
+.audience-card {
+  border: 1px solid #181818; border-radius: 5px; padding: 20px 20px;
+}
+.audience-card h3 { color: #888; font-size: 0.8em; margin-bottom: 8px; }
+.audience-card p  { color: #383838; font-size: 0.78em; line-height: 1.6; }
+/* ── Landing footer ────────────────────────────────────────────────────────── */
+.landing-footer {
+  border-top: 1px solid #111; padding: 28px 28px;
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.72em; color: #282828; max-width: 960px; margin: 0 auto;
+  flex-wrap: wrap; gap: 10px;
+}
+.landing-footer a { color: #333; text-decoration: none; }
+.landing-footer a:hover { color: #666; }
+/* ── Error banner ──────────────────────────────────────────────────────────── */
+.error-banner {
+  background: #1a0a0a; border: 1px solid #5a1a1a; border-radius: 4px;
+  color: #c44; font-size: 0.82em; padding: 10px 16px;
+  margin: 20px auto; max-width: 480px; text-align: center;
+}
+/* ── Pricing cards ─────────────────────────────────────────────────────────── */
+.pricing-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+  margin-bottom: 40px;
+}
+@media (max-width: 700px) { .pricing-grid { grid-template-columns: 1fr; } }
+.pricing-card {
+  background: #0f0f0f; border: 1px solid #1c1c1c;
+  border-radius: 6px; padding: 28px 24px;
+}
+.pricing-card.featured { border-color: #2a5a3a; }
+.pricing-tier {
+  color: #3a9a4a; font-size: 0.7em; letter-spacing: 0.14em;
+  text-transform: uppercase; margin-bottom: 12px;
+}
+.pricing-price {
+  font-size: 1.8em; color: #ccc; margin-bottom: 6px;
+}
+.pricing-price span { font-size: 0.45em; color: #444; vertical-align: middle; }
+.pricing-desc { color: #444; font-size: 0.78em; margin-bottom: 20px; line-height: 1.55; }
+.pricing-features { list-style: none; margin-bottom: 24px; }
+.pricing-features li {
+  color: #555; font-size: 0.78em; padding: 5px 0;
+  border-bottom: 1px solid #141414;
+}
+.pricing-features li::before { content: "— "; color: #2a4a3a; }
+.coming-soon-note {
+  background: #0a0f0a; border: 1px solid #1a2a1a; border-radius: 4px;
+  color: #3a6a3a; font-size: 0.78em; padding: 12px 18px; text-align: center;
+  margin-bottom: 30px;
+}
+/* ── Standards page ────────────────────────────────────────────────────────── */
+.standard-block { margin-bottom: 28px; }
+.standard-header {
+  display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px;
+}
+.standard-name { color: #ccc; font-size: 0.95em; }
+.badge-impl   { background: #0a1f0a; border: 1px solid #1a4a1a; color: #3a9a4a; }
+.badge-partial{ background: #1a1a0a; border: 1px solid #4a3a0a; color: #8a7a2a; }
+.badge-planned{ background: #0a0a1a; border: 1px solid #1a1a4a; color: #3a3a8a; }
+.standard-body { color: #444; font-size: 0.82em; line-height: 1.7; padding-left: 12px;
+  border-left: 2px solid #181818; }
+.standard-body a { color: #3a6a5a; text-decoration: none; }
+.standard-body a:hover { color: #5a9a7a; }
+/* ── Watch entry page ──────────────────────────────────────────────────────── */
+.watch-entry { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:80vh; padding:40px 20px; text-align:center; }
+.watch-desc { color:#444; font-size:.88em; max-width:380px; margin:10px auto 28px; line-height:1.6; }
+.code-input { font-family:monospace; font-size:2.4em; letter-spacing:.4em; width:100%; max-width:320px; text-align:center; background:#141414; border:1px solid #242424; border-radius:6px; color:#eee; padding:16px 8px; outline:none; }
+.code-input:focus { border-color:#3a6a3a; }
+@media(max-width:420px){ .code-input { font-size:1.9em; } }
+/* ── Mobile ─────────────────────────────────────────────────────────────────── */
+.pub-nav { flex-wrap: wrap; }
+.hero h1 { font-size: clamp(1.6rem, 5.5vw, 3rem); }
+@media (max-width: 600px) {
+  .pub-nav { padding: 12px 16px 8px; gap: 0 4px; }
+  .pub-nav .nav-logo { flex-basis: 100%; margin-bottom: 8px; }
+  .nav-link { font-size: 0.75em; padding: 4px 8px; }
+  .hero { padding: 52px 20px 44px; }
+  .hero-desc { font-size: 0.82em; margin-bottom: 28px; }
+  .landing-section { padding: 0 16px 44px; }
+  .section-label { margin-bottom: 16px; }
+  .feature-card { padding: 16px 14px; }
+  .audience-card { padding: 16px 14px; }
+  .pricing-card { padding: 20px 16px; }
+}
+@media (max-width: 480px) {
+  .hero-actions { flex-direction: column; align-items: stretch; gap: 10px; }
+  .btn-cta, .btn-ghost { text-align: center; padding: 14px 24px; }
+  .landing-footer { flex-direction: column; align-items: center; text-align: center; padding: 20px 16px; }
+}
+"""
+
+_VIEWER_CSS = """
+html, body { margin:0; background:#0d0d0d; height:100%; overflow:hidden; font-family:monospace; }
+#viewer-wrap { display:flex; flex-direction:column; height:100vh; }
+#viewer-header { display:flex; justify-content:space-between; padding:10px 16px; font-size:.72em; color:#2a2a2a; }
+#viewer-captions { flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:16px 20px 28px; gap:10px; }
+.caption-line { font-size:clamp(2.4rem,7vw,4.2rem); line-height:1.3; color:#fff; text-align:center; text-shadow:2px 2px 6px #000,-1px -1px 4px #000; }
+.caption-line.prev { opacity:0.5; }
+#viewer-footer { text-align:center; font-size:.65em; color:#1c1c1c; padding:8px; }
+#viewer-status { display:inline; }
+#viewer-status.live { color:#3a9a4a; }
+#viewer-status.error { color:#7a2a2a; }
+"""
+
+
+# ── Cookie helpers ────────────────────────────────────────────────────────────
+
+def _parse_cookie(header: str, name: str) -> 'str | None':
+    for part in header.split(';'):
+        part = part.strip()
+        if part.startswith(name + '='):
+            return part[len(name) + 1:]
+    return None
+
+
+# ── Auth manager (Google OAuth2 + signed session cookies) ────────────────────
+
+class _AuthManager:
+    GOOGLE_AUTH_URL  = 'https://accounts.google.com/o/oauth2/v2/auth'
+    GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+    GOOGLE_CERTS_URL = 'https://www.googleapis.com/oauth2/v3/certs'
+
+    def __init__(self, cfg: dict) -> None:
+        self.client_id       = cfg.get('google_client_id', '')
+        self.client_secret   = cfg.get('google_client_secret', '')
+        self.redirect_uri    = cfg.get('redirect_uri', '')
+        self.allowed_emails  = [e.lower() for e in cfg.get('allowed_emails', [])]
+        self.session_max_age = int(cfg.get('session_max_age', 86400))
+        self.session_secret  = cfg.get('session_secret', '')
+        self.cookie_name     = cfg.get('cookie_name', 'mc_session')
+        self.cookie_secure   = bool(cfg.get('cookie_secure', False))
+        self._jwks_client    = None
+        self._jwks_lock      = threading.Lock()
+
+    def login_url(self, state: str) -> str:
+        params = urllib.parse.urlencode({
+            'client_id':     self.client_id,
+            'redirect_uri':  self.redirect_uri,
+            'response_type': 'code',
+            'scope':         'openid email',
+            'state':         state,
+            'access_type':   'online',
+        })
+        return f'{self.GOOGLE_AUTH_URL}?{params}'
+
+    def exchange_code(self, code: str) -> dict:
+        data = urllib.parse.urlencode({
+            'code':          code,
+            'client_id':     self.client_id,
+            'client_secret': self.client_secret,
+            'redirect_uri':  self.redirect_uri,
+            'grant_type':    'authorization_code',
+        }).encode()
+        req = urllib.request.Request(self.GOOGLE_TOKEN_URL, data=data, method='POST')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    def verify_id_token(self, id_token: str) -> dict:
+        try:
+            import jwt
+            from jwt import PyJWKClient
+        except ImportError as exc:
+            raise RuntimeError(
+                'PyJWT not installed — run: pip install "PyJWT[crypto]>=2.8,<3"'
+            ) from exc
+        with self._jwks_lock:
+            if self._jwks_client is None:
+                self._jwks_client = PyJWKClient(self.GOOGLE_CERTS_URL)
+            client = self._jwks_client
+        signing_key = client.get_signing_key_from_jwt(id_token)
+        return jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=['RS256'],
+            audience=self.client_id,
+        )
+
+    def make_cookie(self, email: str) -> str:
+        payload = base64.urlsafe_b64encode(
+            json.dumps({
+                'e': email,
+                'x': int(time.time()) + self.session_max_age,
+            }).encode()
+        ).rstrip(b'=').decode()
+        sig = hmac.new(
+            self.session_secret.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+        return f'{payload}.{sig}'
+
+    def verify_cookie(self, raw: str) -> 'str | None':
+        try:
+            payload, sig = raw.rsplit('.', 1)
+        except ValueError:
+            return None
+        expected = hmac.new(
+            self.session_secret.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        try:
+            data = json.loads(base64.urlsafe_b64decode(payload + '=='))
+        except Exception:
+            return None
+        if data.get('x', 0) < time.time():
+            return None
+        return data.get('e')
+
+    def is_allowed(self, email: str) -> bool:
+        if not self.allowed_emails:
+            return True  # empty list = allow all authenticated Google users
+        return email.lower() in self.allowed_emails
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
@@ -529,6 +979,17 @@ class _Handler(BaseHTTPRequestHandler):
     # The registry dict maps session_id → Session; populated by WebVTTServer.
     _session_registry: Dict = {}
     _registry_lock: threading.Lock = None
+
+    # Auth — set by WebVTTServer.__init__; None means auth disabled
+    _auth: Optional['_AuthManager'] = None
+
+    # Video queue
+    _queue: List[Dict] = []
+    _queue_lock: threading.Lock = None
+
+    # Watch code registry — code (6-digit str) → session_id
+    _code_registry: Dict[str, str] = {}
+    _code_lock: threading.Lock = None
 
     # Callbacks set by WebVTTServer.__init__
     start_callback: Optional[Callable[[str], str]] = None  # url → session_id
@@ -545,44 +1006,25 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split('?')[0]
         parts = [p for p in path.split('/') if p]
 
-        if path in ('/', '/dashboard'):
-            self._send(self._page_control_room().encode(), 'text/html')
+        # ── Public routes ─────────────────────────────────────────────────
+        if path == '/':
+            self._send(self._page_landing().encode(), 'text/html')
 
-        elif parts[:1] == ['player'] and len(parts) == 2:
-            sess = self._session_registry.get(parts[1])
-            if not sess:
-                self._send(_NO_SESSION_HTML.encode(), 'text/html')
-            else:
-                html = _make_player_html(
-                    sess.video_id, sess.url, sess.source_type, sess.id)
-                self._send(html.encode(), 'text/html')
+        elif path == '/login':
+            self._get_login()
 
-        elif parts[:1] == ['events'] and len(parts) == 2:
-            self._sse_stream(parts[1])
+        elif path == '/auth/callback':
+            self._get_auth_callback()
 
-        elif parts[:1] == ['webvtt'] and len(parts) == 2:
-            sess = self._session_registry.get(parts[1])
-            if not sess:
-                self.send_error(404)
-            else:
-                self._send(sess.writer.flush().encode(), 'text/vtt')
+        elif path == '/logout':
+            self._get_logout()
 
-        elif path == '/monitor':
-            self._send(self._page_monitor().encode(), 'text/html')
-        elif path == '/config':
-            self._send(self._page_config().encode(), 'text/html')
-        elif path == '/logs':
-            self._send(self._page_logs().encode(), 'text/html')
+        elif path == '/pricing':
+            self._send(self._page_pricing().encode(), 'text/html')
 
-        elif path == '/api/sessions':
-            self._send(self._build_sessions_json().encode(), 'application/json')
-        elif path == '/api/metrics':
-            self._send(self._build_metrics_json().encode(), 'application/json')
-        elif path == '/api/config':
-            self._send(
-                json.dumps(_Handler.config_snapshot, indent=2).encode(),
-                'application/json',
-            )
+        elif path == '/standards':
+            self._send(self._page_standards().encode(), 'text/html')
+
         elif path == '/status':
             sessions = list(self._session_registry.values())
             payload = json.dumps({
@@ -592,6 +1034,116 @@ class _Handler(BaseHTTPRequestHandler):
             })
             self._send(payload.encode(), 'application/json')
 
+        # ── Protected routes ──────────────────────────────────────────────
+        elif path == '/dashboard':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_control_room(email).encode(), 'text/html')
+
+        elif path == '/queue':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_queue(email).encode(), 'text/html')
+
+        elif parts[:1] == ['player'] and len(parts) == 2:
+            if (email := self._require_auth()) is None: return
+            sess = self._session_registry.get(parts[1])
+            if not sess:
+                self._send(_NO_SESSION_HTML.encode(), 'text/html')
+            else:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                mode = qs.get('mode', ['live'])[0]
+                html = _make_player_html(
+                    sess.video_id, sess.url, sess.source_type, sess.id, mode=mode)
+                self._send(html.encode(), 'text/html')
+
+        elif parts[:1] == ['events'] and len(parts) == 2:
+            if self._require_auth() is None: return
+            self._sse_stream(parts[1])
+
+        elif parts[:1] == ['webvtt'] and len(parts) == 2:
+            if self._require_auth() is None: return
+            sess = self._session_registry.get(parts[1])
+            if not sess:
+                self.send_error(404)
+            else:
+                self._send(sess.writer.flush().encode(), 'text/vtt')
+
+        elif path == '/monitor':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_monitor(email).encode(), 'text/html')
+
+        elif path == '/config':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_config(email).encode(), 'text/html')
+
+        elif path == '/logs':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_logs(email).encode(), 'text/html')
+
+        elif path == '/api/sessions':
+            if self._require_auth() is None: return
+            self._send(self._build_sessions_json().encode(), 'application/json')
+
+        elif path == '/api/metrics':
+            if self._require_auth() is None: return
+            self._send(self._build_metrics_json().encode(), 'application/json')
+
+        elif path == '/api/config':
+            if self._require_auth() is None: return
+            self._send(
+                json.dumps(_Handler.config_snapshot, indent=2).encode(),
+                'application/json',
+            )
+
+        elif path == '/api/queue':
+            if self._require_auth() is None: return
+            with _Handler._queue_lock:
+                self._send(json.dumps(_Handler._queue).encode(), 'application/json')
+
+        elif parts[:2] == ['api', 'session'] and len(parts) == 4 and parts[3] == 'position':
+            if self._require_auth() is None: return
+            sess = _Handler._session_registry.get(parts[2])
+            if not sess:
+                self.send_error(404)
+                return
+            t = sess.writer.current_time if sess.writer else 0.0
+            n = sess.writer.cue_count   if sess.writer else 0
+            self._send(
+                json.dumps({'current_time': round(t, 3), 'cue_count': n}).encode(),
+                'application/json'
+            )
+
+        elif parts[:2] == ['api', 'session'] and len(parts) == 4 and parts[3] == 'cues':
+            if self._require_auth() is None: return
+            sess = _Handler._session_registry.get(parts[2])
+            if not sess:
+                self.send_error(404)
+                return
+            cues = sess.writer.all_cue_data() if sess.writer else []
+            self._send(json.dumps(cues).encode(), 'application/json')
+
+        # ── Public watch routes ───────────────────────────────────────────
+        elif path == '/watch':
+            self._send(self._page_watch_entry().encode(), 'text/html')
+
+        elif parts[:1] == ['watch'] and len(parts) == 2:
+            self._page_watch_viewer(parts[1])
+
+        elif parts[:2] == ['events', 'watch'] and len(parts) == 3:
+            self._sse_watch_stream(parts[2])
+
+        elif parts[:2] == ['api', 'watch'] and len(parts) == 3:
+            code = parts[2]
+            with _Handler._code_lock:
+                sid = _Handler._code_registry.get(code)
+            if not sid:
+                self.send_error(404)
+                return
+            sess = _Handler._session_registry.get(sid)
+            self._send(json.dumps({
+                'session_id': sid,
+                'status': sess.status if sess else 'gone',
+            }).encode(), 'application/json')
+
         else:
             self.send_error(404)
 
@@ -600,15 +1152,31 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in path.split('/') if p]
 
         if path == '/start':
+            if self._require_auth() is None: return
             self._post_start(redirect=True)
         elif path == '/api/start':
+            if self._require_auth() is None: return
             self._post_start(redirect=False)
         elif parts[:1] == ['stop'] and len(parts) == 2:
+            if self._require_auth() is None: return
             self._post_stop(parts[1])
+        elif path == '/api/queue':
+            if (email := self._require_auth()) is None: return
+            self._post_queue_add(email)
         elif path == '/stop':
-            # Deprecated — no session_id; redirect to control room
+            # Deprecated — no session_id
             self.send_response(303)
-            self.send_header('Location', '/')
+            self.send_header('Location', '/dashboard')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        elif path == '/watch':
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode(errors='replace')
+            params = urllib.parse.parse_qs(body)
+            code = params.get('code', [''])[0].strip()
+            dest = f'/watch/{code}' if re.fullmatch(r'\d{6}', code) else '/watch?error=invalid'
+            self.send_response(303)
+            self.send_header('Location', dest)
             self.send_header('Content-Length', '0')
             self.end_headers()
         else:
@@ -639,7 +1207,7 @@ class _Handler(BaseHTTPRequestHandler):
             session_id = cb(url)
 
         if redirect:
-            dest = f'/player/{session_id}' if session_id else '/'
+            dest = f'/player/{session_id}' if session_id else '/dashboard'
             self.send_response(303)
             self.send_header('Location', dest)
             self.send_header('Content-Length', '0')
@@ -658,16 +1226,15 @@ class _Handler(BaseHTTPRequestHandler):
                 name=f'session-stop-{session_id}',
             ).start()
         self.send_response(303)
-        self.send_header('Location', '/')
+        self.send_header('Location', '/dashboard')
         self.send_header('Content-Length', '0')
         self.end_headers()
 
     # ── page renderers ────────────────────────────────────────────────────────
 
-    def _page_control_room(self) -> str:
+    def _page_control_room(self, email: str) -> str:
         sessions = list(self._session_registry.values())
         stream_count = len(sessions)
-
         if sessions:
             cards = ''.join(self._session_card_html(s) for s in sessions)
             grid_html = f'<div class="sessions-grid">{cards}</div>'
@@ -677,7 +1244,6 @@ class _Handler(BaseHTTPRequestHandler):
                 '<div class="empty-state">No active streams — add one below.</div>'
                 '</div>'
             )
-
         body = (
             f'<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">'
             f'<h2>Active Streams</h2>'
@@ -697,7 +1263,7 @@ class _Handler(BaseHTTPRequestHandler):
             f'<p class="hint" style="margin-top:8px">'
             f'Audio extracted server-side via yt-dlp — no third-party APIs.</p>'
         )
-        return _wrap('Streams', 'streams', body, _CONTROL_ROOM_JS)
+        return _wrap('Streams', 'streams', body, _CONTROL_ROOM_JS, email)
 
     def _session_card_html(self, sess) -> str:
         recent = list(sess.recent_cues)
@@ -722,8 +1288,29 @@ class _Handler(BaseHTTPRequestHandler):
             f'{_esc(sess.error)}</div>'
         ) if sess.error else ''
 
+        code = _esc(sess.code) if sess.code else ''
+        if code:
+            host = self.headers.get('Host', 'localhost:8765')
+            watch_url = urllib.parse.quote(f'http://{host}/watch/{code}', safe='')
+            qr_src = (
+                f'https://api.qrserver.com/v1/create-qr-code/'
+                f'?data={watch_url}&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4'
+            )
+            code_html = (
+                f'<div class="card-watch-info">'
+                f'<span class="session-code">{code}</span>'
+                f'<img class="watch-qr" src="{qr_src}" alt="QR">'
+                f'</div>'
+            )
+            viewer_link = (
+                f'<a href="/watch/{code}" target="_blank" rel="noopener" class="btn-watch">'
+                f'&#128241;&nbsp;Viewer</a>'
+            )
+        else:
+            code_html = ''
+            viewer_link = ''
         return (
-            f'<div class="session-card {sess.status}">'
+            f'<div class="session-card {sess.status}" id="sess-{_esc(sess.id)}">'
             f'<div class="card-header">'
             f'<span class="dot {dot_cls}"></span>'
             f'<span class="card-status">{sess.status.upper()}</span>'
@@ -735,13 +1322,17 @@ class _Handler(BaseHTTPRequestHandler):
             f'<div class="card-stats">{uptime_str}&nbsp;&middot;&nbsp;{cue_count}&nbsp;cues</div>'
             f'{err_html}{cue_html}'
             f'<div class="card-footer">'
+            f'{code_html}'
+            f'<div style="display:flex;gap:8px;align-items:center">'
+            f'{viewer_link}'
             f'<a href="/player/{_esc(sess.id)}" target="_blank" rel="noopener" class="btn-watch">'
             f'&#9654;&nbsp;Watch live</a>'
             f'</div>'
             f'</div>'
+            f'</div>'
         )
 
-    def _page_monitor(self) -> str:
+    def _page_monitor(self, email: str) -> str:
         sessions = list(self._session_registry.values())
         session_rows = ''.join(
             f'<tr>'
@@ -814,9 +1405,9 @@ class _Handler(BaseHTTPRequestHandler):
             '}catch(e){}}'
             'refresh();setInterval(refresh,2000);'
         )
-        return _wrap('Monitor', 'monitor', body, script)
+        return _wrap('Monitor', 'monitor', body, script, email)
 
-    def _page_config(self) -> str:
+    def _page_config(self, email: str) -> str:
         cfg_json = _esc(json.dumps(_Handler.config_snapshot, indent=2))
         body = (
             '<h2>Active configuration</h2>'
@@ -824,9 +1415,9 @@ class _Handler(BaseHTTPRequestHandler):
             '<p class="stub" style="margin-top:6px">'
             'Per-field editing and hot-reload — Phase 2</p>'
         )
-        return _wrap('Config', 'config', body)
+        return _wrap('Config', 'config', body, email=email)
 
-    def _page_logs(self) -> str:
+    def _page_logs(self, email: str) -> str:
         all_cues: list = []
         for s in self._session_registry.values():
             for c in s.recent_cues:
@@ -858,7 +1449,7 @@ class _Handler(BaseHTTPRequestHandler):
             '<h2 style="margin-top:20px">Packet logs</h2>'
             '<div class="card"><p class="stub">Live packet log viewer — Phase 2</p></div>'
         )
-        return _wrap('Logs', 'logs', body)
+        return _wrap('Logs', 'logs', body, email=email)
 
     # ── API JSON builders ─────────────────────────────────────────────────────
 
@@ -877,6 +1468,7 @@ class _Handler(BaseHTTPRequestHandler):
                 'last_cue': last_cue,
                 'status': s.status,
                 'error': s.error or None,
+                'code': s.code,
             })
         return json.dumps(data)
 
@@ -913,6 +1505,21 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
+        # Replay the most-recent cue immediately so new viewers aren't blank.
+        if sess.writer:
+            last = sess.writer.last_cue_data()
+            if last:
+                catchup = json.dumps({
+                    'text':  last['text'],
+                    'lines': [l for l in last['text'].split('\n') if l.strip()],
+                    'start': f"{last['start']:.3f}",
+                    'end':   f"{last['end']:.3f}",
+                })
+                try:
+                    self.wfile.write(f'event: cue\ndata: {catchup}\n\n'.encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
         with sess.sse_lock:
             sess.sse_clients.append(self)
         try:
@@ -934,6 +1541,690 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         except (BrokenPipeError, ConnectionResetError):
             return False
+
+    # ── auth helpers ──────────────────────────────────────────────────────────
+
+    def _require_auth(self) -> 'str | None':
+        """Return the authenticated email, or send a 302 to /login and return None."""
+        if _Handler._auth is None:
+            return 'dev@local'
+        val = _parse_cookie(self.headers.get('Cookie', ''), _Handler._auth.cookie_name)
+        email = _Handler._auth.verify_cookie(val) if val else None
+        if email is None:
+            self.send_response(302)
+            self.send_header('Location', '/login')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return None
+        return email
+
+    def _send_cookie(self, name: str, value: str, max_age: int) -> None:
+        secure = bool(_Handler._auth and _Handler._auth.cookie_secure)
+        parts = [f'{name}={value}', f'Max-Age={max_age}',
+                 'HttpOnly', 'SameSite=Lax', 'Path=/']
+        if secure:
+            parts.append('Secure')
+        self.send_header('Set-Cookie', '; '.join(parts))
+
+    # ── auth route handlers ───────────────────────────────────────────────────
+
+    def _get_login(self) -> None:
+        if _Handler._auth is None:
+            self.send_response(302)
+            self.send_header('Location', '/dashboard')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        state = secrets.token_hex(16)
+        self.send_response(302)
+        self.send_header('Location', _Handler._auth.login_url(state))
+        self._send_cookie('mc_state', state, 300)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def _get_auth_callback(self) -> None:
+        qs_str = self.path.split('?', 1)[1] if '?' in self.path else ''
+        qs = urllib.parse.parse_qs(qs_str)
+        code  = qs.get('code',  [''])[0]
+        state = qs.get('state', [''])[0]
+
+        expected_state = _parse_cookie(self.headers.get('Cookie', ''), 'mc_state')
+        if not code or not state or state != expected_state:
+            self.send_response(302)
+            self.send_header('Location', '/?error=unauthorized')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        try:
+            tokens   = _Handler._auth.exchange_code(code)
+            id_token = tokens.get('id_token', '')
+            claims   = _Handler._auth.verify_id_token(id_token)
+            email    = claims.get('email', '')
+            verified = claims.get('email_verified', False)
+        except Exception as exc:
+            print(f'[Auth] callback error: {exc}')
+            self.send_response(302)
+            self.send_header('Location', '/?error=auth_failed')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        if not verified or not _Handler._auth.is_allowed(email):
+            self.send_response(302)
+            self.send_header('Location', '/?error=unauthorized')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        self.send_response(302)
+        self.send_header('Location', '/dashboard')
+        self._send_cookie('mc_state', '', 0)
+        self._send_cookie(
+            _Handler._auth.cookie_name,
+            _Handler._auth.make_cookie(email),
+            _Handler._auth.session_max_age,
+        )
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def _get_logout(self) -> None:
+        self.send_response(302)
+        self.send_header('Location', '/')
+        if _Handler._auth:
+            self._send_cookie(_Handler._auth.cookie_name, '', 0)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    # ── landing and queue pages ───────────────────────────────────────────────
+
+    def _page_landing(self) -> str:
+        qs_str = self.path.split('?', 1)[1] if '?' in self.path else ''
+        qs = urllib.parse.parse_qs(qs_str)
+        error = qs.get('error', [''])[0]
+        if error == 'unauthorized':
+            error_html = (
+                '<div class="error-banner">'
+                'Access denied &mdash; your account is not on the allowed list.'
+                '</div>'
+            )
+        elif error == 'auth_failed':
+            error_html = (
+                '<div class="error-banner">'
+                'Authentication failed &mdash; please try again.'
+                '</div>'
+            )
+        else:
+            error_html = ''
+
+        features = [
+            ('Sub-2s latency',
+             'GPU-accelerated ASR (Whisper / NVIDIA Parakeet) runs server-side '
+             'and delivers caption packets in under two seconds end-to-end.'),
+            ('CEA-608 &amp; CEA-708',
+             'Byte-accurate closed-caption packets for FCC Part 79 compliance. '
+             'Drop-in replacement for legacy hardware captioning encoders.'),
+            ('Any yt-dlp stream',
+             'Submit a YouTube, Twitch, peg.tv, or any yt-dlp-supported URL. '
+             'Audio is pulled server-side &mdash; no browser plugin required.'),
+            ('WebVTT delivery',
+             'Live captions streamed to browsers via Server-Sent Events. '
+             'Download per-session WebVTT files for archive or post-production.'),
+            ('Multiple concurrent streams',
+             'One GPU instance handles several live feeds simultaneously. '
+             'Each stream is isolated with its own ASR pipeline and caption track.'),
+            ('Low cost',
+             'Runs on a single NVIDIA GPU server. No per-minute transcription '
+             'fees, no third-party APIs &mdash; just your own infrastructure.'),
+        ]
+        feature_cards = ''.join(
+            f'<div class="feature-card"><h3>{title}</h3><p>{desc}</p></div>'
+            for title, desc in features
+        )
+
+        audience = [
+            ('Public broadcast networks',
+             'Add real-time closed captions to live programme feeds without '
+             'expensive dedicated captioning hardware or per-minute service fees.'),
+            ('Community &amp; access television',
+             'Meet FCC and local franchise captioning requirements on a '
+             'municipal or non-profit budget.'),
+            ('Streaming operators',
+             'Attach CEA-708 packets and WebVTT tracks to any yt-dlp-supported '
+             'stream, including YouTube Live, Twitch, and RTMP endpoints.'),
+            ('Post-production &amp; archiving',
+             'Re-caption existing recordings or live replays and export '
+             'standards-compliant WebVTT files for distribution.'),
+        ]
+        audience_cards = ''.join(
+            f'<div class="audience-card"><h3>{title}</h3><p>{desc}</p></div>'
+            for title, desc in audience
+        )
+
+        return (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>MicroCaption &mdash; Post-Broadcast Captioning</title>'
+            f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
+            # nav
+            f'<nav class="pub-nav">'
+            f'<a href="/" class="nav-logo">MicroCaption</a>'
+            f'<a href="/pricing" class="nav-link">Pricing</a>'
+            f'<a href="/standards" class="nav-link">Standards</a>'
+            f'<a href="/watch" class="nav-link">Have a code?</a>'
+            f'<a href="/login" class="nav-link">Log in</a>'
+            f'</nav>'
+            f'{error_html}'
+            # hero
+            f'<div class="hero">'
+            f'<div class="hero-eyebrow">Post-broadcast captioning service</div>'
+            f'<h1>Closed captions for any live media stream</h1>'
+            f'<p class="hero-desc">'
+            f'MicroCaption is a low-cost captioning service for public broadcast '
+            f'networks and media operators who need to add CEA-608 and CEA-708 '
+            f'closed captions to existing live streams &mdash; without the cost '
+            f'of traditional captioning bureaux or dedicated hardware encoders.'
+            f'</p>'
+            f'<div class="hero-actions">'
+            f'<a href="/login" class="btn-cta">Log In &rarr;</a>'
+            f'<a href="/pricing" class="btn-ghost">View pricing</a>'
+            f'</div>'
+            f'</div>'
+            # features
+            f'<div class="landing-section">'
+            f'<p class="section-label">What&rsquo;s included</p>'
+            f'<div class="feature-grid">{feature_cards}</div>'
+            f'</div>'
+            # who it's for
+            f'<div class="landing-section">'
+            f'<p class="section-label">Who it&rsquo;s for</p>'
+            f'<div class="audience-grid">{audience_cards}</div>'
+            f'</div>'
+            # footer
+            f'<footer class="landing-footer">'
+            f'<span>&copy; MicroCaption</span>'
+            f'<span>'
+            f'<a href="/pricing">Pricing</a>'
+            f'&ensp;&middot;&ensp;'
+            f'<a href="/standards">Standards</a>'
+            f'&ensp;&middot;&ensp;'
+            f'<a href="/login">Log in</a>'
+            f'</span>'
+            f'</footer>'
+            f'</body></html>'
+        )
+
+    def _page_pricing(self) -> str:
+        def _pub_wrap(title: str, body: str) -> str:
+            return (
+                f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+                f'<title>MicroCaption &mdash; {title}</title>'
+                f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
+                f'<nav class="pub-nav"><a href="/" class="nav-logo">MicroCaption</a>'
+                f'<a href="/pricing" class="nav-link">Pricing</a>'
+                f'<a href="/standards" class="nav-link">Standards</a>'
+                f'<a href="/watch" class="nav-link">Have a code?</a>'
+                f'<a href="/login" class="nav-link">Log in</a></nav>'
+                f'<main>{body}</main>'
+                f'<footer class="landing-footer">'
+                f'<span>&copy; MicroCaption</span>'
+                f'<span>'
+                f'<a href="/">Home</a>&ensp;&middot;&ensp;'
+                f'<a href="/standards">Standards</a>&ensp;&middot;&ensp;'
+                f'<a href="/login">Log in</a>'
+                f'</span></footer>'
+                f'</body></html>'
+            )
+
+        tiers = [
+            {
+                'tier':     'Community',
+                'price':    '$0',
+                'period':   '/ month',
+                'desc':     'Self-hosted. Run MicroCaption on your own GPU server at no software cost.',
+                'features': [
+                    'Unlimited streams (hardware permitting)',
+                    'CEA-608 &amp; CEA-708 packet output',
+                    'WebVTT live delivery &amp; download',
+                    'Multi-stream control room',
+                    'Community support (GitHub)',
+                ],
+                'featured': False,
+            },
+            {
+                'tier':     'Managed',
+                'price':    'TBD',
+                'period':   '',
+                'desc':     'Hosted on our infrastructure. No GPU required on your end.',
+                'features': [
+                    'Everything in Community',
+                    'Managed GPU infrastructure',
+                    'SLA-backed uptime',
+                    'Priority ASR queue',
+                    'Email support',
+                ],
+                'featured': True,
+            },
+            {
+                'tier':     'Enterprise',
+                'price':    'Custom',
+                'period':   '',
+                'desc':     'Dedicated capacity, on-premise deployment, and integration support.',
+                'features': [
+                    'Everything in Managed',
+                    'Dedicated GPU allocation',
+                    'On-premise / private cloud deploy',
+                    'DeckLink SDI vanc output (Phase 2)',
+                    'Integration &amp; onboarding support',
+                ],
+                'featured': False,
+            },
+        ]
+
+        cards = ''.join(
+            f'<div class="pricing-card{"  featured" if t["featured"] else ""}">'
+            f'<div class="pricing-tier">{t["tier"]}</div>'
+            f'<div class="pricing-price">{t["price"]}'
+            f'{"<span>" + t["period"] + "</span>" if t["period"] else ""}'
+            f'</div>'
+            f'<p class="pricing-desc">{t["desc"]}</p>'
+            f'<ul class="pricing-features">'
+            + ''.join(f'<li>{f}</li>' for f in t['features']) +
+            f'</ul>'
+            f'</div>'
+            for t in tiers
+        )
+
+        body = (
+            f'<div style="padding:60px 24px 20px;text-align:center">'
+            f'<div class="hero-eyebrow">Pricing</div>'
+            f'<h2 style="font-size:1.8em;color:#ccc;margin-bottom:12px;font-weight:normal">'
+            f'Simple, transparent pricing</h2>'
+            f'<p style="color:#444;font-size:.85em;max-width:480px;margin:0 auto 48px;line-height:1.65">'
+            f'MicroCaption is open-source software. The Community tier is always free to self-host. '
+            f'Managed and Enterprise tiers are coming &mdash; pricing will be announced soon.'
+            f'</p>'
+            f'</div>'
+            f'<div style="max-width:960px;margin:0 auto;padding:0 24px">'
+            f'<div class="coming-soon-note">'
+            f'Managed and Enterprise pricing is being finalised &mdash; '
+            f'<a href="/login" style="color:#3a9a4a">log in</a> to register your interest.'
+            f'</div>'
+            f'<div class="pricing-grid">{cards}</div>'
+            f'</div>'
+        )
+        return _pub_wrap('Pricing', body)
+
+    def _page_standards(self) -> str:
+        def _pub_wrap(title: str, body: str) -> str:
+            return (
+                f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+                f'<title>MicroCaption &mdash; {title}</title>'
+                f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
+                f'<nav class="pub-nav"><a href="/" class="nav-logo">MicroCaption</a>'
+                f'<a href="/pricing" class="nav-link">Pricing</a>'
+                f'<a href="/standards" class="nav-link">Standards</a>'
+                f'<a href="/watch" class="nav-link">Have a code?</a>'
+                f'<a href="/login" class="nav-link">Log in</a></nav>'
+                f'<main>{body}</main>'
+                f'<footer class="landing-footer">'
+                f'<span>&copy; MicroCaption</span>'
+                f'<span>'
+                f'<a href="/">Home</a>&ensp;&middot;&ensp;'
+                f'<a href="/pricing">Pricing</a>&ensp;&middot;&ensp;'
+                f'<a href="/login">Log in</a>'
+                f'</span></footer>'
+                f'</body></html>'
+            )
+
+        # (name, badge_class, badge_label, body_html)
+        standards = [
+            (
+                'CEA-608-E / EIA-608 &mdash; Line 21 Closed Captioning',
+                'badge-impl', 'Implemented',
+                'The original analogue closed-captioning standard, carried as Line 21 VBI data in '
+                'NTSC broadcasts. MicroCaption generates byte-accurate CEA-608 character pairs with '
+                'correct odd parity, roll-up channel assignments, and null-pair padding to the '
+                '29.97 fps frame rate. Output is suitable for insertion into SDI ancillary data '
+                '(VANC line 21 emulation) or multiplexing into MPEG-2 user data.'
+            ),
+            (
+                'CTA-708-E / CEA-708 &mdash; Digital Television Closed Captioning',
+                'badge-impl', 'Implemented',
+                'The successor standard for digital (ATSC/cable) television. MicroCaption produces '
+                'DTVCC Transport Layer packets containing Service Block data for Service 1 '
+                '(primary English). <code>cc_data</code> tuples are constructed per the '
+                'CTA-708-E spec and are ready for embedding in MPEG-2 SEI or H.264/H.265 '
+                'user-data payloads. CEA-608 compatibility bytes are included in every packet '
+                'for legacy decoder fallback.'
+            ),
+            (
+                'W3C WebVTT &mdash; Web Video Text Tracks',
+                'badge-impl', 'Implemented',
+                'MicroCaption writes a live WebVTT stream for each session, delivered to browsers '
+                'via Server-Sent Events and available as a downloadable <code>.vtt</code> file. '
+                'Cue timing follows the WebVTT 1.0 W3C Recommendation. WebVTT files can be '
+                'attached directly to HTML5 <code>&lt;video&gt;</code> track elements or '
+                'ingested by most NLE and captioning workflows.'
+            ),
+            (
+                'FCC 47 CFR Part 79 &mdash; Closed Captioning of Video Programming',
+                'badge-partial', 'Partial',
+                'Part 79 requires video programming distributors to pass through closed captions '
+                'and sets quality standards (accuracy, synchronisation, completeness, placement). '
+                'MicroCaption addresses the technical packet layer (CEA-608 / CEA-708 output) '
+                'and targets sub-2-second caption latency. Compliance with all Part 79 quality '
+                'benchmarks depends on ASR accuracy for your specific programme content and '
+                'language, which varies. Full end-to-end compliance assessment is the '
+                'operator&rsquo;s responsibility.'
+            ),
+            (
+                'WCAG 2.1 Success Criterion 1.2.2 &mdash; Captions (Pre-recorded) &mdash; Level A',
+                'badge-partial', 'Via WebVTT',
+                'SC 1.2.2 requires captions for all pre-recorded audio content in synchronised '
+                'media. MicroCaption&rsquo;s WebVTT output can satisfy this criterion when applied '
+                'to recorded streams. Caption accuracy must meet the &ldquo;equivalent&rdquo; '
+                'threshold; post-processing review is recommended for pre-recorded content '
+                'where accuracy requirements are strict.'
+            ),
+            (
+                'WCAG 2.1 Success Criterion 1.2.4 &mdash; Captions (Live) &mdash; Level AA',
+                'badge-impl', 'Implemented',
+                'SC 1.2.4 requires captions for all live audio content in synchronised media. '
+                'This is MicroCaption&rsquo;s primary design target. Live WebVTT delivery via '
+                'SSE and real-time CEA-708 packet generation both address this criterion. '
+                'Note that WCAG acknowledges live ASR captions will not achieve the same '
+                'accuracy as human stenographers; the standard permits reasonable best-effort '
+                'for live content.'
+            ),
+            (
+                'SMPTE ST 2038 &mdash; Carriage of CEA-708 Closed Captions in SMPTE ST 2110',
+                'badge-planned', 'Planned',
+                'ST 2038 defines how to carry ancillary (ANC) data &mdash; including CEA-708 '
+                'caption packets &mdash; over IP media networks conforming to SMPTE ST 2110. '
+                'Support for SMPTE 2110 ANC output is planned for a future phase once the '
+                'DeckLink SDI interface (Phase 2) is integrated.'
+            ),
+            (
+                'ATSC A/72 &mdash; Captions in ATSC 3.0 (NEXTGEN TV)',
+                'badge-planned', 'Planned',
+                'A/72 defines closed-caption delivery for ATSC 3.0 broadcasts using '
+                'IMSC 1.1 (a profile of TTML). As ATSC 3.0 rollout continues in the US '
+                'and internationally, MicroCaption will add TTML/IMSC output alongside '
+                'the existing CEA-608/708 and WebVTT tracks.'
+            ),
+        ]
+
+        blocks = ''.join(
+            f'<div class="standard-block">'
+            f'<div class="standard-header">'
+            f'<span class="standard-name">{name}</span>'
+            f'<span class="badge {badge_cls}">{badge_lbl}</span>'
+            f'</div>'
+            f'<div class="standard-body">{body_html}</div>'
+            f'</div>'
+            for name, badge_cls, badge_lbl, body_html in standards
+        )
+
+        legend = (
+            '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:32px">'
+            '<span class="badge badge-impl">Implemented</span>'
+            '<span class="badge badge-partial">Partial / conditional</span>'
+            '<span class="badge badge-planned">Planned</span>'
+            '</div>'
+        )
+
+        body = (
+            f'<div style="padding:60px 24px 20px">'
+            f'<div class="hero-eyebrow">Standards &amp; compliance</div>'
+            f'<h2 style="font-size:1.6em;color:#ccc;margin-bottom:12px;font-weight:normal">'
+            f'Broadcast and accessibility standards</h2>'
+            f'<p style="color:#444;font-size:.85em;max-width:640px;line-height:1.65;margin-bottom:40px">'
+            f'MicroCaption is built against the standards used in professional broadcast '
+            f'and web accessibility. The table below lists each relevant specification, '
+            f'its implementation status in the current release, and any important caveats.'
+            f'</p>'
+            f'</div>'
+            f'<div style="max-width:860px;margin:0 auto;padding:0 24px 80px">'
+            f'{legend}'
+            f'<div class="card">{blocks}</div>'
+            f'</div>'
+        )
+        return _pub_wrap('Standards', body)
+
+    def _page_queue(self, email: str) -> str:
+        with _Handler._queue_lock:
+            items = list(_Handler._queue)
+
+        if items:
+            rows = ''.join(
+                f'<tr>'
+                f'<td class="ts">'
+                f'{_esc(item["added_at"][:19].replace("T", " "))}'
+                f'</td>'
+                f'<td style="color:#555">'
+                f'{_esc((item["url"][:72] + "…") if len(item["url"]) > 72 else item["url"])}'
+                f'</td>'
+                f'<td style="color:#3a9a4a;font-size:.78em">'
+                f'{_esc(item["status"].upper())}'
+                f'</td>'
+                f'<td class="ts">{_esc(item["added_by"])}</td>'
+                f'</tr>'
+                for item in items
+            )
+        else:
+            rows = '<tr><td colspan="4" class="stub">Queue is empty.</td></tr>'
+
+        count_label = f'{len(items)} item{"s" if len(items) != 1 else ""}'
+        body = (
+            f'<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">'
+            f'<h2>Queue</h2>'
+            f'<span style="color:#333;font-size:.78em">{count_label}</span>'
+            f'</div>'
+            f'<div class="card">'
+            f'<table><thead><tr>'
+            f'<th>Added</th><th>URL</th><th>Status</th><th>By</th>'
+            f'</tr></thead><tbody>{rows}</tbody></table></div>'
+            f'<h2 style="margin-top:24px">Add to Queue</h2>'
+            f'<div class="card">'
+            f'<form id="queue-form" class="row">'
+            f'<input type="url" id="queue-url-input"'
+            f' placeholder="YouTube, Twitch, peg.tv, or any yt-dlp URL…" required>'
+            f'<button id="queue-btn" class="btn-primary" type="submit">'
+            f'&#43;&nbsp;Queue</button>'
+            f'</form>'
+            f'</div>'
+            f'<p class="hint" style="margin-top:8px">'
+            f'Queued videos will be processed in order when a session slot is available.</p>'
+        )
+        script = (
+            'const qf=document.getElementById("queue-form");'
+            'if(qf){qf.addEventListener("submit",async e=>{'
+            'e.preventDefault();'
+            'const inp=document.getElementById("queue-url-input");'
+            'const btn=document.getElementById("queue-btn");'
+            'const url=inp.value.trim();if(!url)return;'
+            'btn.disabled=true;btn.textContent="Adding…";'
+            'try{'
+            'const r=await fetch("/api/queue",{method:"POST",'
+            'headers:{"Content-Type":"application/x-www-form-urlencoded"},'
+            'body:"url="+encodeURIComponent(url)});'
+            'const d=await r.json();'
+            'if(d.id){inp.value="";location.reload();}'
+            'else if(d.error){alert("Error: "+d.error);}'
+            '}catch(ex){alert("Request failed: "+ex);}'
+            'finally{btn.disabled=false;btn.textContent="+ Queue";}'
+            '});}'
+        )
+        return _wrap('Queue', 'queue', body, script, email)
+
+    def _post_queue_add(self, email: str) -> None:
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode(errors='replace')
+        params = urllib.parse.parse_qs(body)
+        url = params.get('url', [''])[0].strip()
+        if not url:
+            self._send_json({'error': 'no url provided'}, 400)
+            return
+        item = {
+            'id':         uuid.uuid4().hex,
+            'url':        url,
+            'added_by':   email,
+            'added_at':   datetime.datetime.utcnow().isoformat() + 'Z',
+            'status':     'pending',
+            'session_id': None,
+        }
+        with _Handler._queue_lock:
+            _Handler._queue.append(item)
+            position = len(_Handler._queue)
+        self._send_json({'id': item['id'], 'position': position})
+
+    # ── watch (public) pages and SSE ─────────────────────────────────────────
+
+    def _page_watch_entry(self) -> str:
+        qs_str = self.path.split('?', 1)[1] if '?' in self.path else ''
+        qs = urllib.parse.parse_qs(qs_str)
+        error = qs.get('error', [''])[0]
+        error_html = (
+            '<div class="error-banner">Invalid code &mdash; please check and try again.</div>'
+            if error == 'invalid' else ''
+        )
+        return (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>MicroCaption &mdash; Enter Code</title>'
+            f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
+            f'<nav class="pub-nav">'
+            f'<a href="/" class="nav-logo">MicroCaption</a>'
+            f'</nav>'
+            f'{error_html}'
+            f'<div class="watch-entry">'
+            f'<h1 style="color:#ccc;font-size:1.5em;margin-bottom:6px">Enter your caption code</h1>'
+            f'<p class="watch-desc">Type the 6-digit code shown in your meeting or event to view live captions on this device.</p>'
+            f'<form method="POST" action="/watch" id="watch-form">'
+            f'<input class="code-input" type="text" name="code" id="code-input"'
+            f' inputmode="numeric" maxlength="6" pattern="[0-9]{{6}}"'
+            f' placeholder="000000" autocomplete="off" autofocus>'
+            f'</form>'
+            f'</div>'
+            f'<script>'
+            f'const inp=document.getElementById("code-input");'
+            f'inp.addEventListener("input",()=>{{'
+            f'if(/^\\d{{6}}$/.test(inp.value))window.location.href="/watch/"+inp.value;'
+            f'}});'
+            f'document.getElementById("watch-form").addEventListener("submit",e=>{{'
+            f'e.preventDefault();'
+            f'if(/^\\d{{6}}$/.test(inp.value))window.location.href="/watch/"+inp.value;'
+            f'}});'
+            f'</script>'
+            f'</body></html>'
+        )
+
+    def _page_watch_viewer(self, code: str) -> None:
+        with _Handler._code_lock:
+            session_id = _Handler._code_registry.get(code)
+        if not session_id:
+            self.send_response(302)
+            self.send_header('Location', '/watch?error=invalid')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        safe_code = _esc(code)
+        body = (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>MicroCaption &mdash; Live Captions</title>'
+            f'<style>{_VIEWER_CSS}</style></head><body>'
+            f'<div id="viewer-wrap">'
+            f'<div id="viewer-header">'
+            f'<span>Code: {safe_code}</span>'
+            f'<span id="viewer-status">Connecting&hellip;</span>'
+            f'</div>'
+            f'<div id="viewer-captions"></div>'
+            f'<div id="viewer-footer">Powered by MicroCaption</div>'
+            f'</div>'
+            f'<script>'
+            f'const cap=document.getElementById("viewer-captions");'
+            f'const stat=document.getElementById("viewer-status");'
+            f'const MAX_CHARS=32;'
+            f'const DWELL_MS=6000;'
+            f'const MIN_STABLE_MS=1500;'
+            f'let pendingText="",displayedText="",lastRenderTime=0;'
+            f'let renderTimer=null,clearTimer=null,pollTimer=null;'
+            f'function splitLines(text){{'
+            f'const words=text.trim().split(/\\s+/);'
+            f'const lines=[];let line="";'
+            f'for(const w of words){{'
+            f'const c=line?line+" "+w:w;'
+            f'if(c.length<=MAX_CHARS){{line=c;}}else{{if(line)lines.push(line);line=w;}}'
+            f'}}'
+            f'if(line)lines.push(line);return lines;'
+            f'}}'
+            f'function doRender(text){{'
+            f'cap.innerHTML="";'
+            f'splitLines(text).slice(-2).forEach(l=>{{'
+            f'if(!l.trim())return;'
+            f'const s=document.createElement("span");'
+            f's.className="caption-line";s.textContent=l;cap.appendChild(s);'
+            f'}});'
+            f'displayedText=text;lastRenderTime=Date.now();'
+            f'}}'
+            f'function tryUpdate(){{'
+            f'if(!pendingText||pendingText===displayedText)return;'
+            f'const wait=MIN_STABLE_MS-(Date.now()-lastRenderTime);'
+            f'if(wait<=0){{doRender(pendingText);}}else if(!renderTimer){{'
+            f'renderTimer=setTimeout(()=>{{renderTimer=null;tryUpdate();}},wait);'
+            f'}}'
+            f'}}'
+            f'function onCue(text){{'
+            f'if(!text.trim())return;'
+            f'if(clearTimer){{clearTimeout(clearTimer);clearTimer=null;}}'
+            f'pendingText=text;'
+            f'tryUpdate();'
+            f'clearTimer=setTimeout(()=>{{'
+            f'cap.innerHTML="";pendingText=displayedText="";lastRenderTime=0;'
+            f'if(renderTimer){{clearTimeout(renderTimer);renderTimer=null;}}'
+            f'clearTimer=null;'
+            f'}},DWELL_MS);'
+            f'}}'
+            f'const es=new EventSource("/events/watch/{safe_code}");'
+            f'es.addEventListener("cue",e=>{{'
+            f'const d=JSON.parse(e.data);'
+            f'const text=d.text||(d.lines||[]).join(" ");'
+            f'stat.textContent="LIVE";stat.className="live";'
+            f'onCue(text);'
+            f'}});'
+            f'es.onopen=()=>{{'
+            f'if(pollTimer){{clearInterval(pollTimer);pollTimer=null;}}'
+            f'}};'
+            f'es.onerror=()=>{{'
+            f'stat.textContent="Reconnecting…";stat.className="error";'
+            f'if(!pollTimer){{pollTimer=setInterval(async()=>{{'
+            f'try{{const r=await fetch("/api/watch/{safe_code}");'
+            f'if(r.status===404){{clearInterval(pollTimer);pollTimer=null;'
+            f'stat.textContent="Session ended";stat.className="error";es.close();}}'
+            f'}}catch(e){{}}'
+            f'}},3000);}}'
+            f'}};'
+            f'</script>'
+            f'</body></html>'
+        )
+        encoded = body.encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Length', str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _sse_watch_stream(self, code: str) -> None:
+        with _Handler._code_lock:
+            session_id = _Handler._code_registry.get(code)
+        if not session_id:
+            self.send_error(404)
+            return
+        self._sse_stream(session_id)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -972,6 +2263,7 @@ class WebVTTServer:
     """
 
     def __init__(self, config: dict,
+                 auth_cfg: Optional[Dict] = None,
                  start_callback: Optional[Callable[[str], str]] = None,
                  stop_callback: Optional[Callable[[str], None]] = None,
                  metrics_provider: Optional[Callable[[], Dict]] = None,
@@ -984,6 +2276,13 @@ class WebVTTServer:
 
         _Handler._session_registry = {}
         _Handler._registry_lock = self._lock
+        _Handler._auth = (
+            _AuthManager(auth_cfg) if (auth_cfg or {}).get('enabled') else None
+        )
+        _Handler._queue = []
+        _Handler._queue_lock = threading.Lock()
+        _Handler._code_registry = {}
+        _Handler._code_lock = threading.Lock()
         _Handler.start_callback = start_callback
         _Handler.stop_callback = stop_callback
         _Handler.metrics_provider = metrics_provider
@@ -991,11 +2290,19 @@ class WebVTTServer:
 
     def register_session(self, session) -> None:
         with self._lock:
+            while True:
+                code = f'{secrets.randbelow(1_000_000):06d}'
+                if code not in _Handler._code_registry:
+                    break
+            session.code = code
+            _Handler._code_registry[code] = session.id
             _Handler._session_registry[session.id] = session
 
     def unregister_session(self, session_id: str) -> None:
         with self._lock:
-            _Handler._session_registry.pop(session_id, None)
+            sess = _Handler._session_registry.pop(session_id, None)
+            if sess and sess.code:
+                _Handler._code_registry.pop(sess.code, None)
 
     def start(self) -> None:
         self._server = _ThreadedHTTPServer((self._host, self._port), _Handler)

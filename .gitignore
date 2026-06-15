@@ -1,14 +1,57 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*$py.class
+*.pyc
 *.pyo
+*.pyd
+
+# Virtual environments
 .venv/
+venv/
+ENV/
+env/
 
-# Runtime logs
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project logs
 logs/
+*.log
 
-# Python bytecode only — keep logs and docs
+# Environment / secrets
+.env
+*.env
 
-
-# Claude Code local settings
+# Claude / local tooling settings
 .claude/settings.local.json
+
+# Testing and coverage caches
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Python build and distribution artifacts
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST

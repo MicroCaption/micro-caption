@@ -20,6 +20,7 @@ class Session:
     sse_lock: threading.Lock = field(default_factory=threading.Lock)
     status: str = 'starting'   # 'starting' | 'live' | 'error'
     error: str = ''
+    code: str = ''             # 6-digit zero-padded, assigned by WebVTTServer.register_session
 
     @property
     def uptime(self) -> float:

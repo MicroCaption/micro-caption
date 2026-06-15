@@ -59,3 +59,14 @@ output:
 
 monitor:
   report_interval: 60
+
+auth:
+  enabled: true
+  google_client_id: ""
+  google_client_secret: ""           # inject via MC_AUTH_CLIENT_SECRET
+  redirect_uri: "https://your-domain.example.com/auth/callback"
+  allowed_emails: []
+  session_max_age: 86400
+  session_secret: ""                 # inject via MC_AUTH_SESSION_SECRET
+  cookie_name: "mc_session"
+  cookie_secure: true                # HTTPS in production

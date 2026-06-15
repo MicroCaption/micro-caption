@@ -26,6 +26,7 @@ class WebVTTWriter:
 
     def __init__(self) -> None:
         self._cues: List[str] = []
+        self._cue_data: List[dict] = []
         self._cue_index = 1
 
     def add_cue(self, text: str, start: float, end: float,
@@ -37,6 +38,7 @@ class WebVTTWriter:
             f'{text}\n'
         )
         self._cues.append(cue)
+        self._cue_data.append({'start': start, 'end': end, 'text': text})
         self._cue_index += 1
 
     def header(self) -> str:
@@ -57,7 +59,21 @@ class WebVTTWriter:
     def reset(self) -> None:
         """Clear all cues — call when starting a new video session."""
         self._cues = []
+        self._cue_data = []
         self._cue_index = 1
+
+    @property
+    def current_time(self) -> float:
+        """End timestamp of the last cue, or 0.0 if no cues yet."""
+        return self._cue_data[-1]['end'] if self._cue_data else 0.0
+
+    def last_cue_data(self) -> 'dict | None':
+        """Most recent structured cue dict, or None."""
+        return self._cue_data[-1] if self._cue_data else None
+
+    def all_cue_data(self) -> List[dict]:
+        """Snapshot of all structured cues — safe to read from any thread."""
+        return list(self._cue_data)
 
     @property
     def cue_count(self) -> int:
