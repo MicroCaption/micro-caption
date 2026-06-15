@@ -2,7 +2,6 @@ from .base import InputOutputManager, AudioChunk, AudioCallback
 from .alsa_adapter import AudioInAlsaAdapter
 from .decklink_adapter import DeckLinkAdapter
 from .youtube_adapter import YouTubeAdapter
-from .youtube_video_adapter import YouTubeAdapter
 
 
 def create_adapter(config: dict) -> InputOutputManager:
