@@ -67,8 +67,9 @@ nav {
 }
 .nav-logo {
   color: #3a3a3a; letter-spacing: 0.14em; text-transform: uppercase;
-  font-size: 0.8em; margin-right: auto;
+  font-size: 0.8em; margin-right: auto; text-decoration: none;
 }
+.nav-logo:hover { color: #666; }
 .nav-link {
   color: #555; text-decoration: none; padding: 5px 11px;
   border-radius: 4px; font-size: 0.8em; transition: color .15s;
@@ -190,7 +191,7 @@ def _nav(active: str, email: 'str | None' = None) -> str:
         f'{" active" if lbl.lower() == active else ""}">{lbl}</a>'
         for lbl, h in tabs
     )
-    return (f'<nav><span class="nav-logo">MicroCaption</span>'
+    return (f'<nav><a href="/" class="nav-logo">MicroCaption</a>'
             f'{links}{right}</nav>')
 
 
@@ -1413,7 +1414,7 @@ class _Handler(BaseHTTPRequestHandler):
             f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
             # nav
             f'<nav class="pub-nav">'
-            f'<span class="nav-logo">MicroCaption</span>'
+            f'<a href="/" class="nav-logo">MicroCaption</a>'
             f'<a href="/pricing" class="nav-link">Pricing</a>'
             f'<a href="/standards" class="nav-link">Standards</a>'
             f'<a href="/login" class="nav-link">Log in</a>'
@@ -1464,7 +1465,7 @@ class _Handler(BaseHTTPRequestHandler):
                 f'<!DOCTYPE html><html><head><meta charset="utf-8">'
                 f'<title>MicroCaption &mdash; {title}</title>'
                 f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
-                f'<nav class="pub-nav"><span class="nav-logo">MicroCaption</span>'
+                f'<nav class="pub-nav"><a href="/" class="nav-logo">MicroCaption</a>'
                 f'<a href="/pricing" class="nav-link">Pricing</a>'
                 f'<a href="/standards" class="nav-link">Standards</a>'
                 f'<a href="/login" class="nav-link">Log in</a></nav>'
@@ -1564,7 +1565,7 @@ class _Handler(BaseHTTPRequestHandler):
                 f'<!DOCTYPE html><html><head><meta charset="utf-8">'
                 f'<title>MicroCaption &mdash; {title}</title>'
                 f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
-                f'<nav class="pub-nav"><span class="nav-logo">MicroCaption</span>'
+                f'<nav class="pub-nav"><a href="/" class="nav-logo">MicroCaption</a>'
                 f'<a href="/pricing" class="nav-link">Pricing</a>'
                 f'<a href="/standards" class="nav-link">Standards</a>'
                 f'<a href="/login" class="nav-link">Log in</a></nav>'
