@@ -17,10 +17,18 @@ HTTP server — endpoints:
   GET  /status          — Backward-compat status JSON
 """
 
+import base64
+import datetime
+import hashlib
+import hmac
 import json
+import secrets
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
+import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -168,24 +176,31 @@ input[type=url]::placeholder { color: #2c2c2c; }
 """
 
 
-def _nav(active: str) -> str:
-    tabs = [('Streams', '/'), ('Monitor', '/monitor'),
-            ('Config', '/config'), ('Logs', '/logs')]
+def _nav(active: str, email: 'str | None' = None) -> str:
+    if email:
+        tabs = [('Streams', '/dashboard'), ('Queue', '/queue'),
+                ('Monitor', '/monitor'), ('Config', '/config'), ('Logs', '/logs')]
+        right = (f'<span style="color:#333;font-size:.72em;padding:0 8px">{_esc(email)}</span>'
+                 f'<a href="/logout" class="nav-link">Log out</a>')
+    else:
+        tabs = []
+        right = '<a href="/login" class="nav-link">Log in</a>'
     links = ''.join(
         f'<a href="{h}" class="nav-link'
         f'{" active" if lbl.lower() == active else ""}">{lbl}</a>'
         for lbl, h in tabs
     )
     return (f'<nav><span class="nav-logo">MicroCaption</span>'
-            f'{links}</nav>')
+            f'{links}{right}</nav>')
 
 
-def _wrap(title: str, active: str, body: str, script: str = '') -> str:
+def _wrap(title: str, active: str, body: str, script: str = '',
+          email: 'str | None' = None) -> str:
     st = f'<script>{script}</script>' if script else ''
     return (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<title>MicroCaption — {title}</title>'
             f'<style>{_SHARED_CSS}</style></head><body>'
-            f'{_nav(active)}'
+            f'{_nav(active, email)}'
             f'<main>{body}</main>{st}</body></html>')
 
 
@@ -384,7 +399,7 @@ def _make_player_html(video_id: str, source_url: str,
   <div id="topbar">
     <h1>MicroCaption — Live ASR</h1>
     <div style="display:flex;gap:8px">
-      <a href="/">← Control room</a>
+      <a href="/dashboard">← Control room</a>
       <button id="stop-btn" onclick="stopSession()">&#9632; Stop</button>
     </div>
   </div>
@@ -403,7 +418,7 @@ def _make_player_html(video_id: str, source_url: str,
 
     async function stopSession() {{
       await fetch('/stop/{session_id}', {{method:'POST'}});
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     }}
 
     let pendingText   = '';
@@ -513,13 +528,161 @@ def _make_player_html(video_id: str, source_url: str,
 _NO_SESSION_HTML = """<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>MicroCaption</title>
-<meta http-equiv="refresh" content="2;url=/">
+<meta http-equiv="refresh" content="2;url=/dashboard">
 <style>body{{background:#0d0d0d;color:#555;font-family:monospace;
 display:flex;align-items:center;justify-content:center;height:100vh;}}</style>
 </head>
 <body>Session not found &mdash; redirecting&hellip;</body>
 </html>
 """
+
+
+# ── Landing page styles ───────────────────────────────────────────────────────
+
+_LANDING_CSS = """
+.hero {
+  min-height: calc(100vh - 54px);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center; padding: 60px 24px;
+}
+.hero h1 { font-size: 2.8em; color: #ddd; letter-spacing: 0.06em; margin-bottom: 16px; }
+.hero p  { color: #555; font-size: 1em; margin-bottom: 36px; max-width: 480px; line-height: 1.65; }
+.btn-cta {
+  display: inline-block; padding: 13px 36px; background: #2a7a3a;
+  border-radius: 5px; color: #fff; text-decoration: none;
+  font-family: monospace; font-size: 0.95em; letter-spacing: 0.04em;
+}
+.btn-cta:hover { background: #3a9a4a; }
+.features {
+  max-width: 900px; margin: 0 auto;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+  padding: 0 24px 80px;
+}
+@media (max-width: 640px) { .features { grid-template-columns: 1fr; } }
+.feature-card {
+  background: #0f0f0f; border: 1px solid #1c1c1c;
+  border-radius: 5px; padding: 24px 22px;
+}
+.feature-card h3 {
+  color: #3a9a4a; font-size: 0.75em; letter-spacing: 0.1em;
+  text-transform: uppercase; margin-bottom: 10px;
+}
+.feature-card p { color: #444; font-size: 0.82em; line-height: 1.6; }
+.error-banner {
+  background: #1a0a0a; border: 1px solid #5a1a1a; border-radius: 4px;
+  color: #c44; font-size: 0.82em; padding: 10px 16px;
+  margin: 20px auto; max-width: 480px; text-align: center;
+}
+"""
+
+
+# ── Cookie helpers ────────────────────────────────────────────────────────────
+
+def _parse_cookie(header: str, name: str) -> 'str | None':
+    for part in header.split(';'):
+        part = part.strip()
+        if part.startswith(name + '='):
+            return part[len(name) + 1:]
+    return None
+
+
+# ── Auth manager (Google OAuth2 + signed session cookies) ────────────────────
+
+class _AuthManager:
+    GOOGLE_AUTH_URL  = 'https://accounts.google.com/o/oauth2/v2/auth'
+    GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+    GOOGLE_CERTS_URL = 'https://www.googleapis.com/oauth2/v3/certs'
+
+    def __init__(self, cfg: dict) -> None:
+        self.client_id       = cfg.get('google_client_id', '')
+        self.client_secret   = cfg.get('google_client_secret', '')
+        self.redirect_uri    = cfg.get('redirect_uri', '')
+        self.allowed_emails  = [e.lower() for e in cfg.get('allowed_emails', [])]
+        self.session_max_age = int(cfg.get('session_max_age', 86400))
+        self.session_secret  = cfg.get('session_secret', '')
+        self.cookie_name     = cfg.get('cookie_name', 'mc_session')
+        self.cookie_secure   = bool(cfg.get('cookie_secure', False))
+        self._jwks_client    = None
+        self._jwks_lock      = threading.Lock()
+
+    def login_url(self, state: str) -> str:
+        params = urllib.parse.urlencode({
+            'client_id':     self.client_id,
+            'redirect_uri':  self.redirect_uri,
+            'response_type': 'code',
+            'scope':         'openid email',
+            'state':         state,
+            'access_type':   'online',
+        })
+        return f'{self.GOOGLE_AUTH_URL}?{params}'
+
+    def exchange_code(self, code: str) -> dict:
+        data = urllib.parse.urlencode({
+            'code':          code,
+            'client_id':     self.client_id,
+            'client_secret': self.client_secret,
+            'redirect_uri':  self.redirect_uri,
+            'grant_type':    'authorization_code',
+        }).encode()
+        req = urllib.request.Request(self.GOOGLE_TOKEN_URL, data=data, method='POST')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    def verify_id_token(self, id_token: str) -> dict:
+        try:
+            import jwt
+            from jwt import PyJWKClient
+        except ImportError as exc:
+            raise RuntimeError(
+                'PyJWT not installed — run: pip install "PyJWT[crypto]>=2.8,<3"'
+            ) from exc
+        with self._jwks_lock:
+            if self._jwks_client is None:
+                self._jwks_client = PyJWKClient(self.GOOGLE_CERTS_URL)
+            client = self._jwks_client
+        signing_key = client.get_signing_key_from_jwt(id_token)
+        return jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=['RS256'],
+            audience=self.client_id,
+        )
+
+    def make_cookie(self, email: str) -> str:
+        payload = base64.urlsafe_b64encode(
+            json.dumps({
+                'e': email,
+                'x': int(time.time()) + self.session_max_age,
+            }).encode()
+        ).rstrip(b'=').decode()
+        sig = hmac.new(
+            self.session_secret.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+        return f'{payload}.{sig}'
+
+    def verify_cookie(self, raw: str) -> 'str | None':
+        try:
+            payload, sig = raw.rsplit('.', 1)
+        except ValueError:
+            return None
+        expected = hmac.new(
+            self.session_secret.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        try:
+            data = json.loads(base64.urlsafe_b64decode(payload + '=='))
+        except Exception:
+            return None
+        if data.get('x', 0) < time.time():
+            return None
+        return data.get('e')
+
+    def is_allowed(self, email: str) -> bool:
+        if not self.allowed_emails:
+            return True  # empty list = allow all authenticated Google users
+        return email.lower() in self.allowed_emails
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
@@ -529,6 +692,13 @@ class _Handler(BaseHTTPRequestHandler):
     # The registry dict maps session_id → Session; populated by WebVTTServer.
     _session_registry: Dict = {}
     _registry_lock: threading.Lock = None
+
+    # Auth — set by WebVTTServer.__init__; None means auth disabled
+    _auth: Optional['_AuthManager'] = None
+
+    # Video queue
+    _queue: List[Dict] = []
+    _queue_lock: threading.Lock = None
 
     # Callbacks set by WebVTTServer.__init__
     start_callback: Optional[Callable[[str], str]] = None  # url → session_id
@@ -545,44 +715,19 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split('?')[0]
         parts = [p for p in path.split('/') if p]
 
-        if path in ('/', '/dashboard'):
-            self._send(self._page_control_room().encode(), 'text/html')
+        # ── Public routes ─────────────────────────────────────────────────
+        if path == '/':
+            self._send(self._page_landing().encode(), 'text/html')
 
-        elif parts[:1] == ['player'] and len(parts) == 2:
-            sess = self._session_registry.get(parts[1])
-            if not sess:
-                self._send(_NO_SESSION_HTML.encode(), 'text/html')
-            else:
-                html = _make_player_html(
-                    sess.video_id, sess.url, sess.source_type, sess.id)
-                self._send(html.encode(), 'text/html')
+        elif path == '/login':
+            self._get_login()
 
-        elif parts[:1] == ['events'] and len(parts) == 2:
-            self._sse_stream(parts[1])
+        elif path == '/auth/callback':
+            self._get_auth_callback()
 
-        elif parts[:1] == ['webvtt'] and len(parts) == 2:
-            sess = self._session_registry.get(parts[1])
-            if not sess:
-                self.send_error(404)
-            else:
-                self._send(sess.writer.flush().encode(), 'text/vtt')
+        elif path == '/logout':
+            self._get_logout()
 
-        elif path == '/monitor':
-            self._send(self._page_monitor().encode(), 'text/html')
-        elif path == '/config':
-            self._send(self._page_config().encode(), 'text/html')
-        elif path == '/logs':
-            self._send(self._page_logs().encode(), 'text/html')
-
-        elif path == '/api/sessions':
-            self._send(self._build_sessions_json().encode(), 'application/json')
-        elif path == '/api/metrics':
-            self._send(self._build_metrics_json().encode(), 'application/json')
-        elif path == '/api/config':
-            self._send(
-                json.dumps(_Handler.config_snapshot, indent=2).encode(),
-                'application/json',
-            )
         elif path == '/status':
             sessions = list(self._session_registry.values())
             payload = json.dumps({
@@ -592,6 +737,69 @@ class _Handler(BaseHTTPRequestHandler):
             })
             self._send(payload.encode(), 'application/json')
 
+        # ── Protected routes ──────────────────────────────────────────────
+        elif path == '/dashboard':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_control_room(email).encode(), 'text/html')
+
+        elif path == '/queue':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_queue(email).encode(), 'text/html')
+
+        elif parts[:1] == ['player'] and len(parts) == 2:
+            if (email := self._require_auth()) is None: return
+            sess = self._session_registry.get(parts[1])
+            if not sess:
+                self._send(_NO_SESSION_HTML.encode(), 'text/html')
+            else:
+                html = _make_player_html(
+                    sess.video_id, sess.url, sess.source_type, sess.id)
+                self._send(html.encode(), 'text/html')
+
+        elif parts[:1] == ['events'] and len(parts) == 2:
+            if self._require_auth() is None: return
+            self._sse_stream(parts[1])
+
+        elif parts[:1] == ['webvtt'] and len(parts) == 2:
+            if self._require_auth() is None: return
+            sess = self._session_registry.get(parts[1])
+            if not sess:
+                self.send_error(404)
+            else:
+                self._send(sess.writer.flush().encode(), 'text/vtt')
+
+        elif path == '/monitor':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_monitor(email).encode(), 'text/html')
+
+        elif path == '/config':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_config(email).encode(), 'text/html')
+
+        elif path == '/logs':
+            if (email := self._require_auth()) is None: return
+            self._send(self._page_logs(email).encode(), 'text/html')
+
+        elif path == '/api/sessions':
+            if self._require_auth() is None: return
+            self._send(self._build_sessions_json().encode(), 'application/json')
+
+        elif path == '/api/metrics':
+            if self._require_auth() is None: return
+            self._send(self._build_metrics_json().encode(), 'application/json')
+
+        elif path == '/api/config':
+            if self._require_auth() is None: return
+            self._send(
+                json.dumps(_Handler.config_snapshot, indent=2).encode(),
+                'application/json',
+            )
+
+        elif path == '/api/queue':
+            if self._require_auth() is None: return
+            with _Handler._queue_lock:
+                self._send(json.dumps(_Handler._queue).encode(), 'application/json')
+
         else:
             self.send_error(404)
 
@@ -600,15 +808,21 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in path.split('/') if p]
 
         if path == '/start':
+            if self._require_auth() is None: return
             self._post_start(redirect=True)
         elif path == '/api/start':
+            if self._require_auth() is None: return
             self._post_start(redirect=False)
         elif parts[:1] == ['stop'] and len(parts) == 2:
+            if self._require_auth() is None: return
             self._post_stop(parts[1])
+        elif path == '/api/queue':
+            if (email := self._require_auth()) is None: return
+            self._post_queue_add(email)
         elif path == '/stop':
-            # Deprecated — no session_id; redirect to control room
+            # Deprecated — no session_id
             self.send_response(303)
-            self.send_header('Location', '/')
+            self.send_header('Location', '/dashboard')
             self.send_header('Content-Length', '0')
             self.end_headers()
         else:
@@ -639,7 +853,7 @@ class _Handler(BaseHTTPRequestHandler):
             session_id = cb(url)
 
         if redirect:
-            dest = f'/player/{session_id}' if session_id else '/'
+            dest = f'/player/{session_id}' if session_id else '/dashboard'
             self.send_response(303)
             self.send_header('Location', dest)
             self.send_header('Content-Length', '0')
@@ -658,13 +872,13 @@ class _Handler(BaseHTTPRequestHandler):
                 name=f'session-stop-{session_id}',
             ).start()
         self.send_response(303)
-        self.send_header('Location', '/')
+        self.send_header('Location', '/dashboard')
         self.send_header('Content-Length', '0')
         self.end_headers()
 
     # ── page renderers ────────────────────────────────────────────────────────
 
-    def _page_control_room(self) -> str:
+    def _page_control_room(self, email: str) -> str:
         sessions = list(self._session_registry.values())
         stream_count = len(sessions)
 
@@ -697,7 +911,7 @@ class _Handler(BaseHTTPRequestHandler):
             f'<p class="hint" style="margin-top:8px">'
             f'Audio extracted server-side via yt-dlp — no third-party APIs.</p>'
         )
-        return _wrap('Streams', 'streams', body, _CONTROL_ROOM_JS)
+        return _wrap('Streams', 'streams', body, _CONTROL_ROOM_JS, email)
 
     def _session_card_html(self, sess) -> str:
         recent = list(sess.recent_cues)
@@ -741,7 +955,7 @@ class _Handler(BaseHTTPRequestHandler):
             f'</div>'
         )
 
-    def _page_monitor(self) -> str:
+    def _page_monitor(self, email: str) -> str:
         sessions = list(self._session_registry.values())
         session_rows = ''.join(
             f'<tr>'
@@ -814,9 +1028,9 @@ class _Handler(BaseHTTPRequestHandler):
             '}catch(e){}}'
             'refresh();setInterval(refresh,2000);'
         )
-        return _wrap('Monitor', 'monitor', body, script)
+        return _wrap('Monitor', 'monitor', body, script, email)
 
-    def _page_config(self) -> str:
+    def _page_config(self, email: str) -> str:
         cfg_json = _esc(json.dumps(_Handler.config_snapshot, indent=2))
         body = (
             '<h2>Active configuration</h2>'
@@ -824,9 +1038,9 @@ class _Handler(BaseHTTPRequestHandler):
             '<p class="stub" style="margin-top:6px">'
             'Per-field editing and hot-reload — Phase 2</p>'
         )
-        return _wrap('Config', 'config', body)
+        return _wrap('Config', 'config', body, email=email)
 
-    def _page_logs(self) -> str:
+    def _page_logs(self, email: str) -> str:
         all_cues: list = []
         for s in self._session_registry.values():
             for c in s.recent_cues:
@@ -858,7 +1072,7 @@ class _Handler(BaseHTTPRequestHandler):
             '<h2 style="margin-top:20px">Packet logs</h2>'
             '<div class="card"><p class="stub">Live packet log viewer — Phase 2</p></div>'
         )
-        return _wrap('Logs', 'logs', body)
+        return _wrap('Logs', 'logs', body, email=email)
 
     # ── API JSON builders ─────────────────────────────────────────────────────
 
@@ -935,6 +1149,238 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return False
 
+    # ── auth helpers ──────────────────────────────────────────────────────────
+
+    def _require_auth(self) -> 'str | None':
+        """Return the authenticated email, or send a 302 to /login and return None."""
+        if _Handler._auth is None:
+            return 'dev@local'
+        val = _parse_cookie(self.headers.get('Cookie', ''), _Handler._auth.cookie_name)
+        email = _Handler._auth.verify_cookie(val) if val else None
+        if email is None:
+            self.send_response(302)
+            self.send_header('Location', '/login')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return None
+        return email
+
+    def _send_cookie(self, name: str, value: str, max_age: int) -> None:
+        secure = bool(_Handler._auth and _Handler._auth.cookie_secure)
+        parts = [f'{name}={value}', f'Max-Age={max_age}',
+                 'HttpOnly', 'SameSite=Lax', 'Path=/']
+        if secure:
+            parts.append('Secure')
+        self.send_header('Set-Cookie', '; '.join(parts))
+
+    # ── auth route handlers ───────────────────────────────────────────────────
+
+    def _get_login(self) -> None:
+        if _Handler._auth is None:
+            self.send_response(302)
+            self.send_header('Location', '/dashboard')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        state = secrets.token_hex(16)
+        self.send_response(302)
+        self.send_header('Location', _Handler._auth.login_url(state))
+        self._send_cookie('mc_state', state, 300)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def _get_auth_callback(self) -> None:
+        qs_str = self.path.split('?', 1)[1] if '?' in self.path else ''
+        qs = urllib.parse.parse_qs(qs_str)
+        code  = qs.get('code',  [''])[0]
+        state = qs.get('state', [''])[0]
+
+        expected_state = _parse_cookie(self.headers.get('Cookie', ''), 'mc_state')
+        if not code or not state or state != expected_state:
+            self.send_response(302)
+            self.send_header('Location', '/?error=unauthorized')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        try:
+            tokens   = _Handler._auth.exchange_code(code)
+            id_token = tokens.get('id_token', '')
+            claims   = _Handler._auth.verify_id_token(id_token)
+            email    = claims.get('email', '')
+            verified = claims.get('email_verified', False)
+        except Exception as exc:
+            print(f'[Auth] callback error: {exc}')
+            self.send_response(302)
+            self.send_header('Location', '/?error=auth_failed')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        if not verified or not _Handler._auth.is_allowed(email):
+            self.send_response(302)
+            self.send_header('Location', '/?error=unauthorized')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        self.send_response(302)
+        self.send_header('Location', '/dashboard')
+        self._send_cookie('mc_state', '', 0)
+        self._send_cookie(
+            _Handler._auth.cookie_name,
+            _Handler._auth.make_cookie(email),
+            _Handler._auth.session_max_age,
+        )
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def _get_logout(self) -> None:
+        self.send_response(302)
+        self.send_header('Location', '/')
+        if _Handler._auth:
+            self._send_cookie(_Handler._auth.cookie_name, '', 0)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    # ── landing and queue pages ───────────────────────────────────────────────
+
+    def _page_landing(self) -> str:
+        qs_str = self.path.split('?', 1)[1] if '?' in self.path else ''
+        qs = urllib.parse.parse_qs(qs_str)
+        error = qs.get('error', [''])[0]
+        if error == 'unauthorized':
+            error_html = (
+                '<div class="error-banner">'
+                'Access denied &mdash; your account is not on the allowed list.'
+                '</div>'
+            )
+        elif error == 'auth_failed':
+            error_html = (
+                '<div class="error-banner">'
+                'Authentication failed &mdash; please try again.'
+                '</div>'
+            )
+        else:
+            error_html = ''
+
+        features = [
+            ('Sub-2s latency',
+             'GPU-accelerated Whisper and Parakeet ASR deliver captions '
+             'in under two seconds end-to-end.'),
+            ('CEA-608 &amp; CEA-708',
+             'Byte-accurate broadcast caption packets for FCC-compliant live television.'),
+            ('Any yt-dlp stream',
+             'YouTube, Twitch, peg.tv, or any URL yt-dlp supports &mdash; '
+             'no third-party APIs.'),
+        ]
+        feature_cards = ''.join(
+            f'<div class="feature-card"><h3>{title}</h3><p>{desc}</p></div>'
+            for title, desc in features
+        )
+        return (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<title>MicroCaption</title>'
+            f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
+            f'<nav><span class="nav-logo">MicroCaption</span>'
+            f'<a href="/login" class="nav-link">Log in</a></nav>'
+            f'{error_html}'
+            f'<div class="hero">'
+            f'<h1>MicroCaption</h1>'
+            f'<p>Real-time AI captions for live broadcasts</p>'
+            f'<a href="/login" class="btn-cta">Log In &rarr;</a>'
+            f'</div>'
+            f'<div class="features">{feature_cards}</div>'
+            f'</body></html>'
+        )
+
+    def _page_queue(self, email: str) -> str:
+        with _Handler._queue_lock:
+            items = list(_Handler._queue)
+
+        if items:
+            rows = ''.join(
+                f'<tr>'
+                f'<td class="ts">'
+                f'{_esc(item["added_at"][:19].replace("T", " "))}'
+                f'</td>'
+                f'<td style="color:#555">'
+                f'{_esc((item["url"][:72] + "…") if len(item["url"]) > 72 else item["url"])}'
+                f'</td>'
+                f'<td style="color:#3a9a4a;font-size:.78em">'
+                f'{_esc(item["status"].upper())}'
+                f'</td>'
+                f'<td class="ts">{_esc(item["added_by"])}</td>'
+                f'</tr>'
+                for item in items
+            )
+        else:
+            rows = '<tr><td colspan="4" class="stub">Queue is empty.</td></tr>'
+
+        count_label = f'{len(items)} item{"s" if len(items) != 1 else ""}'
+        body = (
+            f'<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">'
+            f'<h2>Queue</h2>'
+            f'<span style="color:#333;font-size:.78em">{count_label}</span>'
+            f'</div>'
+            f'<div class="card">'
+            f'<table><thead><tr>'
+            f'<th>Added</th><th>URL</th><th>Status</th><th>By</th>'
+            f'</tr></thead><tbody>{rows}</tbody></table></div>'
+            f'<h2 style="margin-top:24px">Add to Queue</h2>'
+            f'<div class="card">'
+            f'<form id="queue-form" class="row">'
+            f'<input type="url" id="queue-url-input"'
+            f' placeholder="YouTube, Twitch, peg.tv, or any yt-dlp URL…" required>'
+            f'<button id="queue-btn" class="btn-primary" type="submit">'
+            f'&#43;&nbsp;Queue</button>'
+            f'</form>'
+            f'</div>'
+            f'<p class="hint" style="margin-top:8px">'
+            f'Queued videos will be processed in order when a session slot is available.</p>'
+        )
+        script = (
+            'const qf=document.getElementById("queue-form");'
+            'if(qf){qf.addEventListener("submit",async e=>{'
+            'e.preventDefault();'
+            'const inp=document.getElementById("queue-url-input");'
+            'const btn=document.getElementById("queue-btn");'
+            'const url=inp.value.trim();if(!url)return;'
+            'btn.disabled=true;btn.textContent="Adding…";'
+            'try{'
+            'const r=await fetch("/api/queue",{method:"POST",'
+            'headers:{"Content-Type":"application/x-www-form-urlencoded"},'
+            'body:"url="+encodeURIComponent(url)});'
+            'const d=await r.json();'
+            'if(d.id){inp.value="";location.reload();}'
+            'else if(d.error){alert("Error: "+d.error);}'
+            '}catch(ex){alert("Request failed: "+ex);}'
+            'finally{btn.disabled=false;btn.textContent="+ Queue";}'
+            '});}'
+        )
+        return _wrap('Queue', 'queue', body, script, email)
+
+    def _post_queue_add(self, email: str) -> None:
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode(errors='replace')
+        params = urllib.parse.parse_qs(body)
+        url = params.get('url', [''])[0].strip()
+        if not url:
+            self._send_json({'error': 'no url provided'}, 400)
+            return
+        item = {
+            'id':         uuid.uuid4().hex,
+            'url':        url,
+            'added_by':   email,
+            'added_at':   datetime.datetime.utcnow().isoformat() + 'Z',
+            'status':     'pending',
+            'session_id': None,
+        }
+        with _Handler._queue_lock:
+            _Handler._queue.append(item)
+            position = len(_Handler._queue)
+        self._send_json({'id': item['id'], 'position': position})
+
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _send(self, body: bytes, content_type: str) -> None:
@@ -972,6 +1418,7 @@ class WebVTTServer:
     """
 
     def __init__(self, config: dict,
+                 auth_cfg: Optional[Dict] = None,
                  start_callback: Optional[Callable[[str], str]] = None,
                  stop_callback: Optional[Callable[[str], None]] = None,
                  metrics_provider: Optional[Callable[[], Dict]] = None,
@@ -984,6 +1431,11 @@ class WebVTTServer:
 
         _Handler._session_registry = {}
         _Handler._registry_lock = self._lock
+        _Handler._auth = (
+            _AuthManager(auth_cfg) if (auth_cfg or {}).get('enabled') else None
+        )
+        _Handler._queue = []
+        _Handler._queue_lock = threading.Lock()
         _Handler.start_callback = start_callback
         _Handler.stop_callback = stop_callback
         _Handler.metrics_provider = metrics_provider

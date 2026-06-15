@@ -19,3 +19,6 @@ faster-whisper
 pyyaml>=6.0
 
 # YAML-based config loading only; no heavy deps required for caption/packet layer
+
+# Auth — Google OAuth2 JWT verification (RS256); brings in 'cryptography' package
+PyJWT[crypto]>=2.8,<3

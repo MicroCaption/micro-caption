@@ -47,10 +47,14 @@ def load_config(path: str) -> dict:
 
 def _apply_env_overrides(cfg: dict) -> None:
     _overrides = {
-        'MC_IO_ADAPTER':         ('io', 'adapter'),
-        'MC_ASR_PRIMARY':        ('asr', 'primary'),
-        'MC_OUTPUT_WEBVTT_PORT': ('output', 'webvtt', 'port'),
-        'MC_ALSA_DEVICE':        ('io', 'alsa', 'device'),
+        'MC_IO_ADAPTER':           ('io', 'adapter'),
+        'MC_ASR_PRIMARY':          ('asr', 'primary'),
+        'MC_OUTPUT_WEBVTT_PORT':   ('output', 'webvtt', 'port'),
+        'MC_ALSA_DEVICE':          ('io', 'alsa', 'device'),
+        'MC_AUTH_CLIENT_ID':       ('auth', 'google_client_id'),
+        'MC_AUTH_CLIENT_SECRET':   ('auth', 'google_client_secret'),
+        'MC_AUTH_SESSION_SECRET':  ('auth', 'session_secret'),
+        'MC_AUTH_REDIRECT_URI':    ('auth', 'redirect_uri'),
     }
     for env_key, path in _overrides.items():
         val = os.environ.get(env_key)
@@ -282,6 +286,7 @@ def main() -> None:
     if webvtt_cfg.get('enabled', True):
         webvtt_server = WebVTTServer(
             webvtt_cfg,
+            auth_cfg=cfg.get('auth', {}),
             start_callback=start_session,
             stop_callback=stop_session,
             metrics_provider=_metrics_provider,

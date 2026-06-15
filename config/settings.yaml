@@ -74,3 +74,16 @@ output:
 # ── Monitoring ────────────────────────────────────────────────────────────────
 monitor:
   report_interval: 30   # seconds between periodic latency reports to stderr
+
+# ── Auth (Google OAuth2) ──────────────────────────────────────────────────────
+auth:
+  enabled: false                     # set true once Google credentials are configured
+  google_client_id: ""               # from Google Cloud Console → APIs & Services → Credentials
+  google_client_secret: ""           # same; use MC_AUTH_CLIENT_SECRET env var in production
+  redirect_uri: "http://localhost:8765/auth/callback"
+  allowed_emails: []                 # e.g. [alice@example.com, bob@company.com] — empty = allow all
+  session_max_age: 86400             # seconds — 24 h
+  session_secret: ""                 # generate: python -c "import secrets; print(secrets.token_hex(32))"
+                                     # use MC_AUTH_SESSION_SECRET env var in production
+  cookie_name: "mc_session"
+  cookie_secure: false               # set true when serving over HTTPS
