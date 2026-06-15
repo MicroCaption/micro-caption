@@ -22,6 +22,7 @@ import datetime
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import threading
 import time
@@ -174,6 +175,9 @@ input[type=url]::placeholder { color: #2c2c2c; }
   text-align: center; padding: 50px 20px;
 }
 .hint { color: #2c2c2c; font-size: 0.72em; }
+.session-code { font-size:1.5em; letter-spacing:.2em; color:#ccc; font-family:monospace; display:block; margin-bottom:6px; }
+.watch-qr { width:88px; height:88px; border-radius:4px; display:block; }
+.card-watch-info { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
 """
 
 
@@ -222,24 +226,68 @@ function cardHtml(s){
   const statusLbl=s.status.toUpperCase();
   const urlD=s.url.length>64?s.url.slice(0,64)+'…':s.url;
   const cueHtml=s.last_cue
-    ?`<div class="card-cue">“${escH(s.last_cue.slice(0,110)+(s.last_cue.length>110?'…':''))}”</div>`
-    :'<div class="card-cue idle">No captions yet…</div>';
-  const errHtml=s.error?`<div style="color:#7a2a2a;font-size:.72em;margin-bottom:8px">${escH(s.error)}</div>`:'';
-  return `<div class="session-card ${escH(s.status)}">
-<div class="card-header">
-  <span class="dot ${dotCls}"></span>
-  <span class="card-status">${statusLbl}</span>
-  <span class="card-id">${escH(s.id)}</span>
+    ?`<div class=”card-cue”>”${escH(s.last_cue.slice(0,110)+(s.last_cue.length>110?'…':''))}”</div>`
+    :'<div class=”card-cue idle”>No captions yet…</div>';
+  const errHtml=s.error?`<div style=”color:#7a2a2a;font-size:.72em;margin-bottom:8px”>${escH(s.error)}</div>`:'';
+  const watchUrl=s.code?window.location.origin+'/watch/'+escH(s.code):'';
+  const qrSrc=s.code?'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(watchUrl)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4':'';
+  const codeHtml=s.code?`<div class=”card-watch-info”><span class=”session-code”>${escH(s.code)}</span>${qrSrc?`<img class=”watch-qr” src=”${qrSrc}” alt=”QR”>`:''}
+</div>`:'';
+  const viewerLink=s.code?`<a href=”/watch/${escH(s.code)}” target=”_blank” rel=”noopener” class=”btn-watch”>&#128241;&nbsp;Viewer</a>`:'';
+  return `<div class=”session-card ${escH(s.status)}”>
+<div class=”card-header”>
+  <span class=”dot ${dotCls}”></span>
+  <span class=”card-status”>${statusLbl}</span>
+  <span class=”card-id”>${escH(s.id)}</span>
   ${badge}
-  <button class="btn-stop" onclick="stopSess('${escH(s.id)}')">&#9632;</button>
+  <button class=”btn-stop” onclick=”stopSess('${escH(s.id)}')”>&#9632;</button>
 </div>
-<div class="card-url">${escH(urlD)}</div>
-<div class="card-stats">${fmtUp(s.uptime_s)}&nbsp;&middot;&nbsp;${s.cue_count}&nbsp;cues</div>
+<div class=”card-url”>${escH(urlD)}</div>
+<div class=”card-stats”>${fmtUp(s.uptime_s)}&nbsp;&middot;&nbsp;${s.cue_count}&nbsp;cues</div>
 ${errHtml}${cueHtml}
-<div class="card-footer">
-  <a href="/player/${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>
+<div class=”card-footer”>
+  ${codeHtml}
+  <div style=”display:flex;gap:8px;align-items:center”>
+    ${viewerLink}
+    <a href=”/player/${escH(s.id)}” target=”_blank” rel=”noopener” class=”btn-watch”>&#9654;&nbsp;Watch live</a>
+  </div>
 </div>
 </div>`;
+}
+// Per-session card elements survive across polling refreshes so QR images don't flicker.
+const _cards={};
+function _qrSrc(code){
+  const url=window.location.origin+'/watch/'+encodeURIComponent(code);
+  return'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(url)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4';
+}
+function _injectCard(grid,s){
+  const tmp=document.createElement('div');
+  tmp.innerHTML=cardHtml(s);
+  const card=tmp.firstElementChild;
+  const qrImg=card.querySelector('.watch-qr');
+  if(qrImg&&s.code)qrImg.src=_qrSrc(s.code);
+  grid.appendChild(card);
+  _cards[s.id]=card;
+}
+function _updateCard(card,s){
+  const dot=card.querySelector('.dot');
+  const lbl=card.querySelector('.card-status');
+  const dotCls=s.status==='live'?'dot-live':s.status==='starting'?'dot-starting':'dot-error';
+  if(dot)dot.className='dot '+dotCls;
+  if(lbl)lbl.textContent=s.status.toUpperCase();
+  const statsEl=card.querySelector('.card-stats');
+  if(statsEl)statsEl.innerHTML=fmtUp(s.uptime_s)+'&nbsp;&middot;&nbsp;'+s.cue_count+'&nbsp;cues';
+  const cueEl=card.querySelector('.card-cue');
+  if(cueEl){
+    if(s.last_cue){
+      const t=s.last_cue.slice(0,110)+(s.last_cue.length>110?'\u2026':'');
+      cueEl.textContent='"'+t+'"';
+      cueEl.classList.remove('idle');
+    }else{
+      cueEl.textContent='No captions yet\u2026';
+      cueEl.classList.add('idle');
+    }
+  }
 }
 async function refresh(){
   try{
@@ -249,10 +297,31 @@ async function refresh(){
     if(cnt)cnt.textContent=data.length+' active';
     if(!wrap)return;
     if(!data.length){
-      wrap.innerHTML='<div class="sessions-grid"><div class="empty-state">No active streams — add one below.</div></div>';
+      wrap.innerHTML='<div class="sessions-grid"><div class="empty-state">No active streams \u2014 add one below.</div></div>';
+      for(const id of Object.keys(_cards))delete _cards[id];
       return;
     }
-    wrap.innerHTML='<div class="sessions-grid">'+data.map(cardHtml).join('')+'</div>';
+    let grid=wrap.querySelector('.sessions-grid');
+    if(!grid){grid=document.createElement('div');grid.className='sessions-grid';wrap.innerHTML='';wrap.appendChild(grid);}
+    // Adopt server-rendered cards so we don't create duplicates.
+    for(const s of data){
+      if(!_cards[s.id]){
+        const el=document.getElementById('sess-'+s.id);
+        if(el){
+          _cards[s.id]=el;
+          const qi=el.querySelector('.watch-qr');
+          if(qi&&!qi.src&&s.code)qi.src=_qrSrc(s.code);
+        }
+      }
+    }
+    const liveIds=new Set(data.map(s=>s.id));
+    for(const id of Object.keys(_cards)){
+      if(!liveIds.has(id)){_cards[id].remove();delete _cards[id];}
+    }
+    for(const s of data){
+      if(_cards[s.id]){_updateCard(_cards[s.id],s);}
+      else{_injectCard(grid,s);}
+    }
   }catch(e){}
 }
 async function stopSess(id){
@@ -294,8 +363,10 @@ setInterval(refresh,2000);
 # ── Player page ───────────────────────────────────────────────────────────────
 
 def _make_player_html(video_id: str, source_url: str,
-                      source_type: str, session_id: str) -> str:
+                      source_type: str, session_id: str,
+                      mode: str = 'live') -> str:
     is_yt = (source_type == 'youtube')
+    is_replay = (mode == 'replay' and is_yt)
 
     yt_api_tag = (
         '  <script src="https://www.youtube.com/iframe_api"></script>\n'
@@ -321,13 +392,40 @@ def _make_player_html(video_id: str, source_url: str,
             f'    </iframe>'
         )
 
+    # Topbar mode button (YouTube only)
+    if is_yt:
+        if is_replay:
+            mode_btn = f'<button id="jump-live-btn" onclick="jumpToLive()">&#9197;&nbsp;Jump to live</button>'
+        else:
+            mode_btn = f'<a href="/player/{session_id}?mode=replay">&#9198;&nbsp;From beginning</a>'
+    else:
+        mode_btn = ''
+
+    # onReady body: seek to live or init replay
+    if is_replay:
+        on_ready_body = '      initReplay();\n'
+    else:
+        on_ready_body = (
+            '      try {\n'
+            f'        const r = await fetch("/api/session/{session_id}/position");\n'
+            '        const d = await r.json();\n'
+            '        if (d.current_time > 2) { event.target.seekTo(d.current_time, true); }\n'
+            '      } catch(e) {}\n'
+        )
+
     yt_pause_js = (
         '\n'
         '    let ytPlayer;\n'
         '    function onYouTubeIframeAPIReady() {\n'
         "      ytPlayer = new YT.Player('yt-iframe', {\n"
-        '        events: { onStateChange: onPlayerStateChange }\n'
+        '        events: {\n'
+        '          onReady: _mcOnPlayerReady,\n'
+        '          onStateChange: onPlayerStateChange\n'
+        '        }\n'
         '      });\n'
+        '    }\n'
+        '    async function _mcOnPlayerReady(event) {\n'
+        + on_ready_body +
         '    }\n'
         '    function onPlayerStateChange(event) {\n'
         '      if (event.data === YT.PlayerState.PAUSED ||\n'
@@ -345,6 +443,68 @@ def _make_player_html(video_id: str, source_url: str,
         '    }'
     ) if is_yt else ''
 
+    # Replay mode JS block
+    if is_replay:
+        replay_js = (
+            '\n'
+            f'    const allCues = [];\n'
+            f'    let replayTimer = null;\n'
+            f'\n'
+            f'    async function initReplay() {{\n'
+            f'      try {{\n'
+            f'        const r = await fetch("/api/session/{session_id}/cues");\n'
+            f'        const cues = await r.json();\n'
+            f'        allCues.push(...cues);\n'
+            f'      }} catch(e) {{}}\n'
+            f'      replayTimer = setInterval(replayTick, 250);\n'
+            f'    }}\n'
+            f'\n'
+            f'    function replayTick() {{\n'
+            f'      if (!ytPlayer || typeof ytPlayer.getCurrentTime !== "function") return;\n'
+            f'      const t = ytPlayer.getCurrentTime();\n'
+            f'      let found = null;\n'
+            f'      for (let i = allCues.length - 1; i >= 0; i--) {{\n'
+            f'        if (allCues[i].start <= t) {{ found = allCues[i]; break; }}\n'
+            f'      }}\n'
+            f'      if (found && found.text !== pendingText) {{\n'
+            f'        onCue(found.text);\n'
+            f'      }} else if (!found && pendingText) {{\n'
+            f'        bar.innerHTML = "";\n'
+            f'        pendingText = displayedText = "";\n'
+            f'      }}\n'
+            f'    }}\n'
+            f'\n'
+            f'    async function jumpToLive() {{\n'
+            f'      if (replayTimer) {{ clearInterval(replayTimer); replayTimer = null; }}\n'
+            f'      window.location.href = "/player/{session_id}";\n'
+            f'    }}\n'
+        )
+    else:
+        replay_js = ''
+
+    # SSE cue handler: live vs replay
+    if is_replay:
+        sse_cue_handler = (
+            f"    es.addEventListener('cue', e => {{\n"
+            f'      const d = JSON.parse(e.data);\n'
+            f"      status.textContent = 'LIVE';\n"
+            f"      status.className = 'live';\n"
+            f'      const text = d.text || (d.lines || []).join(" ");\n'
+            f'      allCues.push({{start: parseFloat(d.start), end: parseFloat(d.end), text}});\n'
+            f'    }});\n'
+        )
+    else:
+        sse_cue_handler = (
+            f"    es.addEventListener('cue', e => {{\n"
+            f'      if (videoPaused) return;\n'
+            f'      const d = JSON.parse(e.data);\n'
+            f"      status.textContent = 'LIVE';\n"
+            f"      status.className = 'live';\n"
+            f'      const text = d.text || (d.lines || []).join(" ");\n'
+            f'      onCue(text);\n'
+            f'    }});\n'
+        )
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -360,8 +520,10 @@ def _make_player_html(video_id: str, source_url: str,
     #topbar h1 {{ color: #555; letter-spacing: 0.12em; text-transform: uppercase; font-size: 1em; }}
     #topbar a {{ color: #555; text-decoration: none; border: 1px solid #2a2a2a; padding: 5px 12px; border-radius: 4px; }}
     #topbar a:hover {{ color: #aaa; border-color: #444; }}
-    #stop-btn {{ background: none; border: 1px solid #5a2020; color: #844; font-family: monospace; font-size: 1em; padding: 5px 12px; border-radius: 4px; cursor: pointer; }}
-    #stop-btn:hover {{ border-color: #a44; color: #c66; }}
+    #stop-btn, #jump-live-btn {{ background: none; border: 1px solid #5a2020; color: #844; font-family: monospace; font-size: 1em; padding: 5px 12px; border-radius: 4px; cursor: pointer; }}
+    #stop-btn:hover, #jump-live-btn:hover {{ border-color: #a44; color: #c66; }}
+    #jump-live-btn {{ border-color: #2a5a2a; color: #484; }}
+    #jump-live-btn:hover {{ border-color: #4a8a4a; color: #6a6; }}
     #player-wrap {{
       position: relative; width: 100%; max-width: 1280px; margin: 0 auto;
       background: #000; border-radius: 6px; overflow: hidden;
@@ -401,6 +563,7 @@ def _make_player_html(video_id: str, source_url: str,
     <h1>MicroCaption — Live ASR</h1>
     <div style="display:flex;gap:8px">
       <a href="/dashboard">← Control room</a>
+      {mode_btn}
       <button id="stop-btn" onclick="stopSession()">&#9632; Stop</button>
     </div>
   </div>
@@ -429,7 +592,7 @@ def _make_player_html(video_id: str, source_url: str,
     let clearTimer    = null;
     let videoPaused   = false;
 {yt_pause_js}
-
+{replay_js}
     const DWELL_MS      = 5000;
     const MIN_STABLE_MS = 2000;
     const MAX_CHARS     = 32;
@@ -502,15 +665,7 @@ def _make_player_html(video_id: str, source_url: str,
 
     const es = new EventSource('/events/{session_id}');
 
-    es.addEventListener('cue', e => {{
-      if (videoPaused) return;
-      const d = JSON.parse(e.data);
-      status.textContent = 'LIVE';
-      status.className = 'live';
-      const text = d.text || (d.lines || []).join(' ');
-      onCue(text);
-    }});
-
+{sse_cue_handler}
     es.onopen = () => {{
       status.textContent = 'Connected — waiting for speech…';
       status.className = 'waiting';
@@ -524,7 +679,6 @@ def _make_player_html(video_id: str, source_url: str,
 </body>
 </html>
 """
-
 
 _NO_SESSION_HTML = """<!DOCTYPE html>
 <html>
@@ -668,6 +822,45 @@ _LANDING_CSS = """
   border-left: 2px solid #181818; }
 .standard-body a { color: #3a6a5a; text-decoration: none; }
 .standard-body a:hover { color: #5a9a7a; }
+/* ── Watch entry page ──────────────────────────────────────────────────────── */
+.watch-entry { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:80vh; padding:40px 20px; text-align:center; }
+.watch-desc { color:#444; font-size:.88em; max-width:380px; margin:10px auto 28px; line-height:1.6; }
+.code-input { font-family:monospace; font-size:2.4em; letter-spacing:.4em; width:100%; max-width:320px; text-align:center; background:#141414; border:1px solid #242424; border-radius:6px; color:#eee; padding:16px 8px; outline:none; }
+.code-input:focus { border-color:#3a6a3a; }
+@media(max-width:420px){ .code-input { font-size:1.9em; } }
+/* ── Mobile ─────────────────────────────────────────────────────────────────── */
+.pub-nav { flex-wrap: wrap; }
+.hero h1 { font-size: clamp(1.6rem, 5.5vw, 3rem); }
+@media (max-width: 600px) {
+  .pub-nav { padding: 12px 16px 8px; gap: 0 4px; }
+  .pub-nav .nav-logo { flex-basis: 100%; margin-bottom: 8px; }
+  .nav-link { font-size: 0.75em; padding: 4px 8px; }
+  .hero { padding: 52px 20px 44px; }
+  .hero-desc { font-size: 0.82em; margin-bottom: 28px; }
+  .landing-section { padding: 0 16px 44px; }
+  .section-label { margin-bottom: 16px; }
+  .feature-card { padding: 16px 14px; }
+  .audience-card { padding: 16px 14px; }
+  .pricing-card { padding: 20px 16px; }
+}
+@media (max-width: 480px) {
+  .hero-actions { flex-direction: column; align-items: stretch; gap: 10px; }
+  .btn-cta, .btn-ghost { text-align: center; padding: 14px 24px; }
+  .landing-footer { flex-direction: column; align-items: center; text-align: center; padding: 20px 16px; }
+}
+"""
+
+_VIEWER_CSS = """
+html, body { margin:0; background:#0d0d0d; height:100%; overflow:hidden; font-family:monospace; }
+#viewer-wrap { display:flex; flex-direction:column; height:100vh; }
+#viewer-header { display:flex; justify-content:space-between; padding:10px 16px; font-size:.72em; color:#2a2a2a; }
+#viewer-captions { flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:16px 20px 28px; gap:10px; }
+.caption-line { font-size:clamp(2.4rem,7vw,4.2rem); line-height:1.3; color:#fff; text-align:center; text-shadow:2px 2px 6px #000,-1px -1px 4px #000; }
+.caption-line.prev { opacity:0.5; }
+#viewer-footer { text-align:center; font-size:.65em; color:#1c1c1c; padding:8px; }
+#viewer-status { display:inline; }
+#viewer-status.live { color:#3a9a4a; }
+#viewer-status.error { color:#7a2a2a; }
 """
 
 
@@ -794,6 +987,10 @@ class _Handler(BaseHTTPRequestHandler):
     _queue: List[Dict] = []
     _queue_lock: threading.Lock = None
 
+    # Watch code registry — code (6-digit str) → session_id
+    _code_registry: Dict[str, str] = {}
+    _code_lock: threading.Lock = None
+
     # Callbacks set by WebVTTServer.__init__
     start_callback: Optional[Callable[[str], str]] = None  # url → session_id
     stop_callback: Optional[Callable[[str], None]] = None  # session_id → None
@@ -852,8 +1049,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not sess:
                 self._send(_NO_SESSION_HTML.encode(), 'text/html')
             else:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                mode = qs.get('mode', ['live'])[0]
                 html = _make_player_html(
-                    sess.video_id, sess.url, sess.source_type, sess.id)
+                    sess.video_id, sess.url, sess.source_type, sess.id, mode=mode)
                 self._send(html.encode(), 'text/html')
 
         elif parts[:1] == ['events'] and len(parts) == 2:
@@ -900,6 +1099,51 @@ class _Handler(BaseHTTPRequestHandler):
             with _Handler._queue_lock:
                 self._send(json.dumps(_Handler._queue).encode(), 'application/json')
 
+        elif parts[:2] == ['api', 'session'] and len(parts) == 4 and parts[3] == 'position':
+            if self._require_auth() is None: return
+            sess = _Handler._session_registry.get(parts[2])
+            if not sess:
+                self.send_error(404)
+                return
+            t = sess.writer.current_time if sess.writer else 0.0
+            n = sess.writer.cue_count   if sess.writer else 0
+            self._send(
+                json.dumps({'current_time': round(t, 3), 'cue_count': n}).encode(),
+                'application/json'
+            )
+
+        elif parts[:2] == ['api', 'session'] and len(parts) == 4 and parts[3] == 'cues':
+            if self._require_auth() is None: return
+            sess = _Handler._session_registry.get(parts[2])
+            if not sess:
+                self.send_error(404)
+                return
+            cues = sess.writer.all_cue_data() if sess.writer else []
+            self._send(json.dumps(cues).encode(), 'application/json')
+
+        # ── Public watch routes ───────────────────────────────────────────
+        elif path == '/watch':
+            self._send(self._page_watch_entry().encode(), 'text/html')
+
+        elif parts[:1] == ['watch'] and len(parts) == 2:
+            self._page_watch_viewer(parts[1])
+
+        elif parts[:2] == ['events', 'watch'] and len(parts) == 3:
+            self._sse_watch_stream(parts[2])
+
+        elif parts[:2] == ['api', 'watch'] and len(parts) == 3:
+            code = parts[2]
+            with _Handler._code_lock:
+                sid = _Handler._code_registry.get(code)
+            if not sid:
+                self.send_error(404)
+                return
+            sess = _Handler._session_registry.get(sid)
+            self._send(json.dumps({
+                'session_id': sid,
+                'status': sess.status if sess else 'gone',
+            }).encode(), 'application/json')
+
         else:
             self.send_error(404)
 
@@ -923,6 +1167,16 @@ class _Handler(BaseHTTPRequestHandler):
             # Deprecated — no session_id
             self.send_response(303)
             self.send_header('Location', '/dashboard')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        elif path == '/watch':
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode(errors='replace')
+            params = urllib.parse.parse_qs(body)
+            code = params.get('code', [''])[0].strip()
+            dest = f'/watch/{code}' if re.fullmatch(r'\d{6}', code) else '/watch?error=invalid'
+            self.send_response(303)
+            self.send_header('Location', dest)
             self.send_header('Content-Length', '0')
             self.end_headers()
         else:
@@ -981,7 +1235,6 @@ class _Handler(BaseHTTPRequestHandler):
     def _page_control_room(self, email: str) -> str:
         sessions = list(self._session_registry.values())
         stream_count = len(sessions)
-
         if sessions:
             cards = ''.join(self._session_card_html(s) for s in sessions)
             grid_html = f'<div class="sessions-grid">{cards}</div>'
@@ -991,7 +1244,6 @@ class _Handler(BaseHTTPRequestHandler):
                 '<div class="empty-state">No active streams — add one below.</div>'
                 '</div>'
             )
-
         body = (
             f'<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px">'
             f'<h2>Active Streams</h2>'
@@ -1036,8 +1288,29 @@ class _Handler(BaseHTTPRequestHandler):
             f'{_esc(sess.error)}</div>'
         ) if sess.error else ''
 
+        code = _esc(sess.code) if sess.code else ''
+        if code:
+            host = self.headers.get('Host', 'localhost:8765')
+            watch_url = urllib.parse.quote(f'http://{host}/watch/{code}', safe='')
+            qr_src = (
+                f'https://api.qrserver.com/v1/create-qr-code/'
+                f'?data={watch_url}&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4'
+            )
+            code_html = (
+                f'<div class="card-watch-info">'
+                f'<span class="session-code">{code}</span>'
+                f'<img class="watch-qr" src="{qr_src}" alt="QR">'
+                f'</div>'
+            )
+            viewer_link = (
+                f'<a href="/watch/{code}" target="_blank" rel="noopener" class="btn-watch">'
+                f'&#128241;&nbsp;Viewer</a>'
+            )
+        else:
+            code_html = ''
+            viewer_link = ''
         return (
-            f'<div class="session-card {sess.status}">'
+            f'<div class="session-card {sess.status}" id="sess-{_esc(sess.id)}">'
             f'<div class="card-header">'
             f'<span class="dot {dot_cls}"></span>'
             f'<span class="card-status">{sess.status.upper()}</span>'
@@ -1049,8 +1322,12 @@ class _Handler(BaseHTTPRequestHandler):
             f'<div class="card-stats">{uptime_str}&nbsp;&middot;&nbsp;{cue_count}&nbsp;cues</div>'
             f'{err_html}{cue_html}'
             f'<div class="card-footer">'
+            f'{code_html}'
+            f'<div style="display:flex;gap:8px;align-items:center">'
+            f'{viewer_link}'
             f'<a href="/player/{_esc(sess.id)}" target="_blank" rel="noopener" class="btn-watch">'
             f'&#9654;&nbsp;Watch live</a>'
+            f'</div>'
             f'</div>'
             f'</div>'
         )
@@ -1191,6 +1468,7 @@ class _Handler(BaseHTTPRequestHandler):
                 'last_cue': last_cue,
                 'status': s.status,
                 'error': s.error or None,
+                'code': s.code,
             })
         return json.dumps(data)
 
@@ -1227,6 +1505,21 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-cache')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
+        # Replay the most-recent cue immediately so new viewers aren't blank.
+        if sess.writer:
+            last = sess.writer.last_cue_data()
+            if last:
+                catchup = json.dumps({
+                    'text':  last['text'],
+                    'lines': [l for l in last['text'].split('\n') if l.strip()],
+                    'start': f"{last['start']:.3f}",
+                    'end':   f"{last['end']:.3f}",
+                })
+                try:
+                    self.wfile.write(f'event: cue\ndata: {catchup}\n\n'.encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
         with sess.sse_lock:
             sess.sse_clients.append(self)
         try:
@@ -1410,6 +1703,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         return (
             f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>MicroCaption &mdash; Post-Broadcast Captioning</title>'
             f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
             # nav
@@ -1417,6 +1711,7 @@ class _Handler(BaseHTTPRequestHandler):
             f'<a href="/" class="nav-logo">MicroCaption</a>'
             f'<a href="/pricing" class="nav-link">Pricing</a>'
             f'<a href="/standards" class="nav-link">Standards</a>'
+            f'<a href="/watch" class="nav-link">Have a code?</a>'
             f'<a href="/login" class="nav-link">Log in</a>'
             f'</nav>'
             f'{error_html}'
@@ -1463,11 +1758,13 @@ class _Handler(BaseHTTPRequestHandler):
         def _pub_wrap(title: str, body: str) -> str:
             return (
                 f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<meta name="viewport" content="width=device-width, initial-scale=1">'
                 f'<title>MicroCaption &mdash; {title}</title>'
                 f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
                 f'<nav class="pub-nav"><a href="/" class="nav-logo">MicroCaption</a>'
                 f'<a href="/pricing" class="nav-link">Pricing</a>'
                 f'<a href="/standards" class="nav-link">Standards</a>'
+                f'<a href="/watch" class="nav-link">Have a code?</a>'
                 f'<a href="/login" class="nav-link">Log in</a></nav>'
                 f'<main>{body}</main>'
                 f'<footer class="landing-footer">'
@@ -1563,11 +1860,13 @@ class _Handler(BaseHTTPRequestHandler):
         def _pub_wrap(title: str, body: str) -> str:
             return (
                 f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<meta name="viewport" content="width=device-width, initial-scale=1">'
                 f'<title>MicroCaption &mdash; {title}</title>'
                 f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
                 f'<nav class="pub-nav"><a href="/" class="nav-logo">MicroCaption</a>'
                 f'<a href="/pricing" class="nav-link">Pricing</a>'
                 f'<a href="/standards" class="nav-link">Standards</a>'
+                f'<a href="/watch" class="nav-link">Have a code?</a>'
                 f'<a href="/login" class="nav-link">Log in</a></nav>'
                 f'<main>{body}</main>'
                 f'<footer class="landing-footer">'
@@ -1782,6 +2081,151 @@ class _Handler(BaseHTTPRequestHandler):
             position = len(_Handler._queue)
         self._send_json({'id': item['id'], 'position': position})
 
+    # ── watch (public) pages and SSE ─────────────────────────────────────────
+
+    def _page_watch_entry(self) -> str:
+        qs_str = self.path.split('?', 1)[1] if '?' in self.path else ''
+        qs = urllib.parse.parse_qs(qs_str)
+        error = qs.get('error', [''])[0]
+        error_html = (
+            '<div class="error-banner">Invalid code &mdash; please check and try again.</div>'
+            if error == 'invalid' else ''
+        )
+        return (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>MicroCaption &mdash; Enter Code</title>'
+            f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
+            f'<nav class="pub-nav">'
+            f'<a href="/" class="nav-logo">MicroCaption</a>'
+            f'</nav>'
+            f'{error_html}'
+            f'<div class="watch-entry">'
+            f'<h1 style="color:#ccc;font-size:1.5em;margin-bottom:6px">Enter your caption code</h1>'
+            f'<p class="watch-desc">Type the 6-digit code shown in your meeting or event to view live captions on this device.</p>'
+            f'<form method="POST" action="/watch" id="watch-form">'
+            f'<input class="code-input" type="text" name="code" id="code-input"'
+            f' inputmode="numeric" maxlength="6" pattern="[0-9]{{6}}"'
+            f' placeholder="000000" autocomplete="off" autofocus>'
+            f'</form>'
+            f'</div>'
+            f'<script>'
+            f'const inp=document.getElementById("code-input");'
+            f'inp.addEventListener("input",()=>{{'
+            f'if(/^\\d{{6}}$/.test(inp.value))window.location.href="/watch/"+inp.value;'
+            f'}});'
+            f'document.getElementById("watch-form").addEventListener("submit",e=>{{'
+            f'e.preventDefault();'
+            f'if(/^\\d{{6}}$/.test(inp.value))window.location.href="/watch/"+inp.value;'
+            f'}});'
+            f'</script>'
+            f'</body></html>'
+        )
+
+    def _page_watch_viewer(self, code: str) -> None:
+        with _Handler._code_lock:
+            session_id = _Handler._code_registry.get(code)
+        if not session_id:
+            self.send_response(302)
+            self.send_header('Location', '/watch?error=invalid')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        safe_code = _esc(code)
+        body = (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>MicroCaption &mdash; Live Captions</title>'
+            f'<style>{_VIEWER_CSS}</style></head><body>'
+            f'<div id="viewer-wrap">'
+            f'<div id="viewer-header">'
+            f'<span>Code: {safe_code}</span>'
+            f'<span id="viewer-status">Connecting&hellip;</span>'
+            f'</div>'
+            f'<div id="viewer-captions"></div>'
+            f'<div id="viewer-footer">Powered by MicroCaption</div>'
+            f'</div>'
+            f'<script>'
+            f'const cap=document.getElementById("viewer-captions");'
+            f'const stat=document.getElementById("viewer-status");'
+            f'const MAX_CHARS=32;'
+            f'const DWELL_MS=6000;'
+            f'const MIN_STABLE_MS=1500;'
+            f'let pendingText="",displayedText="",lastRenderTime=0;'
+            f'let renderTimer=null,clearTimer=null,pollTimer=null;'
+            f'function splitLines(text){{'
+            f'const words=text.trim().split(/\\s+/);'
+            f'const lines=[];let line="";'
+            f'for(const w of words){{'
+            f'const c=line?line+" "+w:w;'
+            f'if(c.length<=MAX_CHARS){{line=c;}}else{{if(line)lines.push(line);line=w;}}'
+            f'}}'
+            f'if(line)lines.push(line);return lines;'
+            f'}}'
+            f'function doRender(text){{'
+            f'cap.innerHTML="";'
+            f'splitLines(text).slice(-2).forEach(l=>{{'
+            f'if(!l.trim())return;'
+            f'const s=document.createElement("span");'
+            f's.className="caption-line";s.textContent=l;cap.appendChild(s);'
+            f'}});'
+            f'displayedText=text;lastRenderTime=Date.now();'
+            f'}}'
+            f'function tryUpdate(){{'
+            f'if(!pendingText||pendingText===displayedText)return;'
+            f'const wait=MIN_STABLE_MS-(Date.now()-lastRenderTime);'
+            f'if(wait<=0){{doRender(pendingText);}}else if(!renderTimer){{'
+            f'renderTimer=setTimeout(()=>{{renderTimer=null;tryUpdate();}},wait);'
+            f'}}'
+            f'}}'
+            f'function onCue(text){{'
+            f'if(!text.trim())return;'
+            f'if(clearTimer){{clearTimeout(clearTimer);clearTimer=null;}}'
+            f'pendingText=text;'
+            f'tryUpdate();'
+            f'clearTimer=setTimeout(()=>{{'
+            f'cap.innerHTML="";pendingText=displayedText="";lastRenderTime=0;'
+            f'if(renderTimer){{clearTimeout(renderTimer);renderTimer=null;}}'
+            f'clearTimer=null;'
+            f'}},DWELL_MS);'
+            f'}}'
+            f'const es=new EventSource("/events/watch/{safe_code}");'
+            f'es.addEventListener("cue",e=>{{'
+            f'const d=JSON.parse(e.data);'
+            f'const text=d.text||(d.lines||[]).join(" ");'
+            f'stat.textContent="LIVE";stat.className="live";'
+            f'onCue(text);'
+            f'}});'
+            f'es.onopen=()=>{{'
+            f'if(pollTimer){{clearInterval(pollTimer);pollTimer=null;}}'
+            f'}};'
+            f'es.onerror=()=>{{'
+            f'stat.textContent="Reconnecting…";stat.className="error";'
+            f'if(!pollTimer){{pollTimer=setInterval(async()=>{{'
+            f'try{{const r=await fetch("/api/watch/{safe_code}");'
+            f'if(r.status===404){{clearInterval(pollTimer);pollTimer=null;'
+            f'stat.textContent="Session ended";stat.className="error";es.close();}}'
+            f'}}catch(e){{}}'
+            f'}},3000);}}'
+            f'}};'
+            f'</script>'
+            f'</body></html>'
+        )
+        encoded = body.encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Length', str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _sse_watch_stream(self, code: str) -> None:
+        with _Handler._code_lock:
+            session_id = _Handler._code_registry.get(code)
+        if not session_id:
+            self.send_error(404)
+            return
+        self._sse_stream(session_id)
+
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _send(self, body: bytes, content_type: str) -> None:
@@ -1837,6 +2281,8 @@ class WebVTTServer:
         )
         _Handler._queue = []
         _Handler._queue_lock = threading.Lock()
+        _Handler._code_registry = {}
+        _Handler._code_lock = threading.Lock()
         _Handler.start_callback = start_callback
         _Handler.stop_callback = stop_callback
         _Handler.metrics_provider = metrics_provider
@@ -1844,11 +2290,19 @@ class WebVTTServer:
 
     def register_session(self, session) -> None:
         with self._lock:
+            while True:
+                code = f'{secrets.randbelow(1_000_000):06d}'
+                if code not in _Handler._code_registry:
+                    break
+            session.code = code
+            _Handler._code_registry[code] = session.id
             _Handler._session_registry[session.id] = session
 
     def unregister_session(self, session_id: str) -> None:
         with self._lock:
-            _Handler._session_registry.pop(session_id, None)
+            sess = _Handler._session_registry.pop(session_id, None)
+            if sess and sess.code:
+                _Handler._code_registry.pop(sess.code, None)
 
     def start(self) -> None:
         self._server = _ThreadedHTTPServer((self._host, self._port), _Handler)

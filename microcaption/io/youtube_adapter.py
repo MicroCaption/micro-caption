@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -81,7 +82,7 @@ class YouTubeAdapter(InputOutputManager):
     def _resolve_cdn_url(self, source_url: str) -> str:
         print(f'[Stream] Resolving CDN URL via yt-dlp…')
         result = subprocess.run(
-            ['yt-dlp', '-g',
+            [sys.executable, '-m', 'yt_dlp', '-g',
              '-f', 'bestaudio/best',   # bestaudio/best: audio-only if available,
              '--no-playlist',           # otherwise best combined (e.g. HLS manifest)
              '--no-check-certificate', source_url],
