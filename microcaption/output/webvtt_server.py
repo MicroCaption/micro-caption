@@ -540,40 +540,133 @@ display:flex;align-items:center;justify-content:center;height:100vh;}}</style>
 # ── Landing page styles ───────────────────────────────────────────────────────
 
 _LANDING_CSS = """
-.hero {
-  min-height: calc(100vh - 54px);
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  text-align: center; padding: 60px 24px;
+/* ── Public nav ────────────────────────────────────────────────────────────── */
+.pub-nav {
+  display: flex; align-items: center; gap: 2px;
+  padding: 14px 28px; border-bottom: 1px solid #141414;
 }
-.hero h1 { font-size: 2.8em; color: #ddd; letter-spacing: 0.06em; margin-bottom: 16px; }
-.hero p  { color: #555; font-size: 1em; margin-bottom: 36px; max-width: 480px; line-height: 1.65; }
+.pub-nav .nav-logo { margin-right: auto; font-size: 0.88em; }
+/* ── Hero ──────────────────────────────────────────────────────────────────── */
+.hero {
+  padding: 100px 24px 80px;
+  display: flex; flex-direction: column;
+  align-items: center; text-align: center;
+}
+.hero-eyebrow {
+  color: #3a9a4a; font-size: 0.72em; letter-spacing: 0.18em;
+  text-transform: uppercase; margin-bottom: 18px;
+}
+.hero h1 {
+  font-size: 3em; color: #ddd; letter-spacing: 0.04em;
+  margin-bottom: 20px; max-width: 700px; line-height: 1.15;
+}
+.hero-desc {
+  color: #555; font-size: 0.9em; line-height: 1.75;
+  max-width: 560px; margin-bottom: 40px;
+}
+.hero-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; justify-content: center; }
 .btn-cta {
-  display: inline-block; padding: 13px 36px; background: #2a7a3a;
+  display: inline-block; padding: 12px 32px; background: #2a7a3a;
   border-radius: 5px; color: #fff; text-decoration: none;
-  font-family: monospace; font-size: 0.95em; letter-spacing: 0.04em;
+  font-family: monospace; font-size: 0.9em; letter-spacing: 0.04em;
 }
 .btn-cta:hover { background: #3a9a4a; }
-.features {
-  max-width: 900px; margin: 0 auto;
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
-  padding: 0 24px 80px;
+.btn-ghost {
+  display: inline-block; padding: 12px 24px;
+  border: 1px solid #2a2a2a; border-radius: 5px; color: #555;
+  text-decoration: none; font-family: monospace; font-size: 0.9em;
 }
-@media (max-width: 640px) { .features { grid-template-columns: 1fr; } }
+.btn-ghost:hover { border-color: #444; color: #aaa; }
+/* ── Feature grid ──────────────────────────────────────────────────────────── */
+.landing-section {
+  max-width: 960px; margin: 0 auto; padding: 0 24px 80px;
+}
+.section-label {
+  color: #2a2a2a; font-size: 0.68em; letter-spacing: 0.16em;
+  text-transform: uppercase; margin-bottom: 24px; text-align: center;
+}
+.feature-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+}
+@media (max-width: 640px) { .feature-grid { grid-template-columns: 1fr; } }
 .feature-card {
   background: #0f0f0f; border: 1px solid #1c1c1c;
-  border-radius: 5px; padding: 24px 22px;
+  border-radius: 5px; padding: 22px 20px;
 }
 .feature-card h3 {
-  color: #3a9a4a; font-size: 0.75em; letter-spacing: 0.1em;
+  color: #3a9a4a; font-size: 0.73em; letter-spacing: 0.1em;
   text-transform: uppercase; margin-bottom: 10px;
 }
-.feature-card p { color: #444; font-size: 0.82em; line-height: 1.6; }
+.feature-card p { color: #444; font-size: 0.81em; line-height: 1.65; }
+/* ── Who it's for ──────────────────────────────────────────────────────────── */
+.audience-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;
+}
+@media (max-width: 540px) { .audience-grid { grid-template-columns: 1fr; } }
+.audience-card {
+  border: 1px solid #181818; border-radius: 5px; padding: 20px 20px;
+}
+.audience-card h3 { color: #888; font-size: 0.8em; margin-bottom: 8px; }
+.audience-card p  { color: #383838; font-size: 0.78em; line-height: 1.6; }
+/* ── Landing footer ────────────────────────────────────────────────────────── */
+.landing-footer {
+  border-top: 1px solid #111; padding: 28px 28px;
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.72em; color: #282828; max-width: 960px; margin: 0 auto;
+  flex-wrap: wrap; gap: 10px;
+}
+.landing-footer a { color: #333; text-decoration: none; }
+.landing-footer a:hover { color: #666; }
+/* ── Error banner ──────────────────────────────────────────────────────────── */
 .error-banner {
   background: #1a0a0a; border: 1px solid #5a1a1a; border-radius: 4px;
   color: #c44; font-size: 0.82em; padding: 10px 16px;
   margin: 20px auto; max-width: 480px; text-align: center;
 }
+/* ── Pricing cards ─────────────────────────────────────────────────────────── */
+.pricing-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+  margin-bottom: 40px;
+}
+@media (max-width: 700px) { .pricing-grid { grid-template-columns: 1fr; } }
+.pricing-card {
+  background: #0f0f0f; border: 1px solid #1c1c1c;
+  border-radius: 6px; padding: 28px 24px;
+}
+.pricing-card.featured { border-color: #2a5a3a; }
+.pricing-tier {
+  color: #3a9a4a; font-size: 0.7em; letter-spacing: 0.14em;
+  text-transform: uppercase; margin-bottom: 12px;
+}
+.pricing-price {
+  font-size: 1.8em; color: #ccc; margin-bottom: 6px;
+}
+.pricing-price span { font-size: 0.45em; color: #444; vertical-align: middle; }
+.pricing-desc { color: #444; font-size: 0.78em; margin-bottom: 20px; line-height: 1.55; }
+.pricing-features { list-style: none; margin-bottom: 24px; }
+.pricing-features li {
+  color: #555; font-size: 0.78em; padding: 5px 0;
+  border-bottom: 1px solid #141414;
+}
+.pricing-features li::before { content: "— "; color: #2a4a3a; }
+.coming-soon-note {
+  background: #0a0f0a; border: 1px solid #1a2a1a; border-radius: 4px;
+  color: #3a6a3a; font-size: 0.78em; padding: 12px 18px; text-align: center;
+  margin-bottom: 30px;
+}
+/* ── Standards page ────────────────────────────────────────────────────────── */
+.standard-block { margin-bottom: 28px; }
+.standard-header {
+  display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px;
+}
+.standard-name { color: #ccc; font-size: 0.95em; }
+.badge-impl   { background: #0a1f0a; border: 1px solid #1a4a1a; color: #3a9a4a; }
+.badge-partial{ background: #1a1a0a; border: 1px solid #4a3a0a; color: #8a7a2a; }
+.badge-planned{ background: #0a0a1a; border: 1px solid #1a1a4a; color: #3a3a8a; }
+.standard-body { color: #444; font-size: 0.82em; line-height: 1.7; padding-left: 12px;
+  border-left: 2px solid #181818; }
+.standard-body a { color: #3a6a5a; text-decoration: none; }
+.standard-body a:hover { color: #5a9a7a; }
 """
 
 
@@ -727,6 +820,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         elif path == '/logout':
             self._get_logout()
+
+        elif path == '/pricing':
+            self._send(self._page_pricing().encode(), 'text/html')
+
+        elif path == '/standards':
+            self._send(self._page_standards().encode(), 'text/html')
 
         elif path == '/status':
             sessions = list(self._session_registry.values())
@@ -1266,33 +1365,334 @@ class _Handler(BaseHTTPRequestHandler):
 
         features = [
             ('Sub-2s latency',
-             'GPU-accelerated Whisper and Parakeet ASR deliver captions '
-             'in under two seconds end-to-end.'),
+             'GPU-accelerated ASR (Whisper / NVIDIA Parakeet) runs server-side '
+             'and delivers caption packets in under two seconds end-to-end.'),
             ('CEA-608 &amp; CEA-708',
-             'Byte-accurate broadcast caption packets for FCC-compliant live television.'),
+             'Byte-accurate closed-caption packets for FCC Part 79 compliance. '
+             'Drop-in replacement for legacy hardware captioning encoders.'),
             ('Any yt-dlp stream',
-             'YouTube, Twitch, peg.tv, or any URL yt-dlp supports &mdash; '
-             'no third-party APIs.'),
+             'Submit a YouTube, Twitch, peg.tv, or any yt-dlp-supported URL. '
+             'Audio is pulled server-side &mdash; no browser plugin required.'),
+            ('WebVTT delivery',
+             'Live captions streamed to browsers via Server-Sent Events. '
+             'Download per-session WebVTT files for archive or post-production.'),
+            ('Multiple concurrent streams',
+             'One GPU instance handles several live feeds simultaneously. '
+             'Each stream is isolated with its own ASR pipeline and caption track.'),
+            ('Low cost',
+             'Runs on a single NVIDIA GPU server. No per-minute transcription '
+             'fees, no third-party APIs &mdash; just your own infrastructure.'),
         ]
         feature_cards = ''.join(
             f'<div class="feature-card"><h3>{title}</h3><p>{desc}</p></div>'
             for title, desc in features
         )
+
+        audience = [
+            ('Public broadcast networks',
+             'Add real-time closed captions to live programme feeds without '
+             'expensive dedicated captioning hardware or per-minute service fees.'),
+            ('Community &amp; access television',
+             'Meet FCC and local franchise captioning requirements on a '
+             'municipal or non-profit budget.'),
+            ('Streaming operators',
+             'Attach CEA-708 packets and WebVTT tracks to any yt-dlp-supported '
+             'stream, including YouTube Live, Twitch, and RTMP endpoints.'),
+            ('Post-production &amp; archiving',
+             'Re-caption existing recordings or live replays and export '
+             'standards-compliant WebVTT files for distribution.'),
+        ]
+        audience_cards = ''.join(
+            f'<div class="audience-card"><h3>{title}</h3><p>{desc}</p></div>'
+            for title, desc in audience
+        )
+
         return (
             f'<!DOCTYPE html><html><head><meta charset="utf-8">'
-            f'<title>MicroCaption</title>'
+            f'<title>MicroCaption &mdash; Post-Broadcast Captioning</title>'
             f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
-            f'<nav><span class="nav-logo">MicroCaption</span>'
-            f'<a href="/login" class="nav-link">Log in</a></nav>'
+            # nav
+            f'<nav class="pub-nav">'
+            f'<span class="nav-logo">MicroCaption</span>'
+            f'<a href="/pricing" class="nav-link">Pricing</a>'
+            f'<a href="/standards" class="nav-link">Standards</a>'
+            f'<a href="/login" class="nav-link">Log in</a>'
+            f'</nav>'
             f'{error_html}'
+            # hero
             f'<div class="hero">'
-            f'<h1>MicroCaption</h1>'
-            f'<p>Real-time AI captions for live broadcasts</p>'
+            f'<div class="hero-eyebrow">Post-broadcast captioning service</div>'
+            f'<h1>Closed captions for any live media stream</h1>'
+            f'<p class="hero-desc">'
+            f'MicroCaption is a low-cost captioning service for public broadcast '
+            f'networks and media operators who need to add CEA-608 and CEA-708 '
+            f'closed captions to existing live streams &mdash; without the cost '
+            f'of traditional captioning bureaux or dedicated hardware encoders.'
+            f'</p>'
+            f'<div class="hero-actions">'
             f'<a href="/login" class="btn-cta">Log In &rarr;</a>'
+            f'<a href="/pricing" class="btn-ghost">View pricing</a>'
             f'</div>'
-            f'<div class="features">{feature_cards}</div>'
+            f'</div>'
+            # features
+            f'<div class="landing-section">'
+            f'<p class="section-label">What&rsquo;s included</p>'
+            f'<div class="feature-grid">{feature_cards}</div>'
+            f'</div>'
+            # who it's for
+            f'<div class="landing-section">'
+            f'<p class="section-label">Who it&rsquo;s for</p>'
+            f'<div class="audience-grid">{audience_cards}</div>'
+            f'</div>'
+            # footer
+            f'<footer class="landing-footer">'
+            f'<span>&copy; MicroCaption</span>'
+            f'<span>'
+            f'<a href="/pricing">Pricing</a>'
+            f'&ensp;&middot;&ensp;'
+            f'<a href="/standards">Standards</a>'
+            f'&ensp;&middot;&ensp;'
+            f'<a href="/login">Log in</a>'
+            f'</span>'
+            f'</footer>'
             f'</body></html>'
         )
+
+    def _page_pricing(self) -> str:
+        def _pub_wrap(title: str, body: str) -> str:
+            return (
+                f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<title>MicroCaption &mdash; {title}</title>'
+                f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
+                f'<nav class="pub-nav"><span class="nav-logo">MicroCaption</span>'
+                f'<a href="/pricing" class="nav-link">Pricing</a>'
+                f'<a href="/standards" class="nav-link">Standards</a>'
+                f'<a href="/login" class="nav-link">Log in</a></nav>'
+                f'<main>{body}</main>'
+                f'<footer class="landing-footer">'
+                f'<span>&copy; MicroCaption</span>'
+                f'<span>'
+                f'<a href="/">Home</a>&ensp;&middot;&ensp;'
+                f'<a href="/standards">Standards</a>&ensp;&middot;&ensp;'
+                f'<a href="/login">Log in</a>'
+                f'</span></footer>'
+                f'</body></html>'
+            )
+
+        tiers = [
+            {
+                'tier':     'Community',
+                'price':    '$0',
+                'period':   '/ month',
+                'desc':     'Self-hosted. Run MicroCaption on your own GPU server at no software cost.',
+                'features': [
+                    'Unlimited streams (hardware permitting)',
+                    'CEA-608 &amp; CEA-708 packet output',
+                    'WebVTT live delivery &amp; download',
+                    'Multi-stream control room',
+                    'Community support (GitHub)',
+                ],
+                'featured': False,
+            },
+            {
+                'tier':     'Managed',
+                'price':    'TBD',
+                'period':   '',
+                'desc':     'Hosted on our infrastructure. No GPU required on your end.',
+                'features': [
+                    'Everything in Community',
+                    'Managed GPU infrastructure',
+                    'SLA-backed uptime',
+                    'Priority ASR queue',
+                    'Email support',
+                ],
+                'featured': True,
+            },
+            {
+                'tier':     'Enterprise',
+                'price':    'Custom',
+                'period':   '',
+                'desc':     'Dedicated capacity, on-premise deployment, and integration support.',
+                'features': [
+                    'Everything in Managed',
+                    'Dedicated GPU allocation',
+                    'On-premise / private cloud deploy',
+                    'DeckLink SDI vanc output (Phase 2)',
+                    'Integration &amp; onboarding support',
+                ],
+                'featured': False,
+            },
+        ]
+
+        cards = ''.join(
+            f'<div class="pricing-card{"  featured" if t["featured"] else ""}">'
+            f'<div class="pricing-tier">{t["tier"]}</div>'
+            f'<div class="pricing-price">{t["price"]}'
+            f'{"<span>" + t["period"] + "</span>" if t["period"] else ""}'
+            f'</div>'
+            f'<p class="pricing-desc">{t["desc"]}</p>'
+            f'<ul class="pricing-features">'
+            + ''.join(f'<li>{f}</li>' for f in t['features']) +
+            f'</ul>'
+            f'</div>'
+            for t in tiers
+        )
+
+        body = (
+            f'<div style="padding:60px 24px 20px;text-align:center">'
+            f'<div class="hero-eyebrow">Pricing</div>'
+            f'<h2 style="font-size:1.8em;color:#ccc;margin-bottom:12px;font-weight:normal">'
+            f'Simple, transparent pricing</h2>'
+            f'<p style="color:#444;font-size:.85em;max-width:480px;margin:0 auto 48px;line-height:1.65">'
+            f'MicroCaption is open-source software. The Community tier is always free to self-host. '
+            f'Managed and Enterprise tiers are coming &mdash; pricing will be announced soon.'
+            f'</p>'
+            f'</div>'
+            f'<div style="max-width:960px;margin:0 auto;padding:0 24px">'
+            f'<div class="coming-soon-note">'
+            f'Managed and Enterprise pricing is being finalised &mdash; '
+            f'<a href="/login" style="color:#3a9a4a">log in</a> to register your interest.'
+            f'</div>'
+            f'<div class="pricing-grid">{cards}</div>'
+            f'</div>'
+        )
+        return _pub_wrap('Pricing', body)
+
+    def _page_standards(self) -> str:
+        def _pub_wrap(title: str, body: str) -> str:
+            return (
+                f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<title>MicroCaption &mdash; {title}</title>'
+                f'<style>{_SHARED_CSS}{_LANDING_CSS}</style></head><body>'
+                f'<nav class="pub-nav"><span class="nav-logo">MicroCaption</span>'
+                f'<a href="/pricing" class="nav-link">Pricing</a>'
+                f'<a href="/standards" class="nav-link">Standards</a>'
+                f'<a href="/login" class="nav-link">Log in</a></nav>'
+                f'<main>{body}</main>'
+                f'<footer class="landing-footer">'
+                f'<span>&copy; MicroCaption</span>'
+                f'<span>'
+                f'<a href="/">Home</a>&ensp;&middot;&ensp;'
+                f'<a href="/pricing">Pricing</a>&ensp;&middot;&ensp;'
+                f'<a href="/login">Log in</a>'
+                f'</span></footer>'
+                f'</body></html>'
+            )
+
+        # (name, badge_class, badge_label, body_html)
+        standards = [
+            (
+                'CEA-608-E / EIA-608 &mdash; Line 21 Closed Captioning',
+                'badge-impl', 'Implemented',
+                'The original analogue closed-captioning standard, carried as Line 21 VBI data in '
+                'NTSC broadcasts. MicroCaption generates byte-accurate CEA-608 character pairs with '
+                'correct odd parity, roll-up channel assignments, and null-pair padding to the '
+                '29.97 fps frame rate. Output is suitable for insertion into SDI ancillary data '
+                '(VANC line 21 emulation) or multiplexing into MPEG-2 user data.'
+            ),
+            (
+                'CTA-708-E / CEA-708 &mdash; Digital Television Closed Captioning',
+                'badge-impl', 'Implemented',
+                'The successor standard for digital (ATSC/cable) television. MicroCaption produces '
+                'DTVCC Transport Layer packets containing Service Block data for Service 1 '
+                '(primary English). <code>cc_data</code> tuples are constructed per the '
+                'CTA-708-E spec and are ready for embedding in MPEG-2 SEI or H.264/H.265 '
+                'user-data payloads. CEA-608 compatibility bytes are included in every packet '
+                'for legacy decoder fallback.'
+            ),
+            (
+                'W3C WebVTT &mdash; Web Video Text Tracks',
+                'badge-impl', 'Implemented',
+                'MicroCaption writes a live WebVTT stream for each session, delivered to browsers '
+                'via Server-Sent Events and available as a downloadable <code>.vtt</code> file. '
+                'Cue timing follows the WebVTT 1.0 W3C Recommendation. WebVTT files can be '
+                'attached directly to HTML5 <code>&lt;video&gt;</code> track elements or '
+                'ingested by most NLE and captioning workflows.'
+            ),
+            (
+                'FCC 47 CFR Part 79 &mdash; Closed Captioning of Video Programming',
+                'badge-partial', 'Partial',
+                'Part 79 requires video programming distributors to pass through closed captions '
+                'and sets quality standards (accuracy, synchronisation, completeness, placement). '
+                'MicroCaption addresses the technical packet layer (CEA-608 / CEA-708 output) '
+                'and targets sub-2-second caption latency. Compliance with all Part 79 quality '
+                'benchmarks depends on ASR accuracy for your specific programme content and '
+                'language, which varies. Full end-to-end compliance assessment is the '
+                'operator&rsquo;s responsibility.'
+            ),
+            (
+                'WCAG 2.1 Success Criterion 1.2.2 &mdash; Captions (Pre-recorded) &mdash; Level A',
+                'badge-partial', 'Via WebVTT',
+                'SC 1.2.2 requires captions for all pre-recorded audio content in synchronised '
+                'media. MicroCaption&rsquo;s WebVTT output can satisfy this criterion when applied '
+                'to recorded streams. Caption accuracy must meet the &ldquo;equivalent&rdquo; '
+                'threshold; post-processing review is recommended for pre-recorded content '
+                'where accuracy requirements are strict.'
+            ),
+            (
+                'WCAG 2.1 Success Criterion 1.2.4 &mdash; Captions (Live) &mdash; Level AA',
+                'badge-impl', 'Implemented',
+                'SC 1.2.4 requires captions for all live audio content in synchronised media. '
+                'This is MicroCaption&rsquo;s primary design target. Live WebVTT delivery via '
+                'SSE and real-time CEA-708 packet generation both address this criterion. '
+                'Note that WCAG acknowledges live ASR captions will not achieve the same '
+                'accuracy as human stenographers; the standard permits reasonable best-effort '
+                'for live content.'
+            ),
+            (
+                'SMPTE ST 2038 &mdash; Carriage of CEA-708 Closed Captions in SMPTE ST 2110',
+                'badge-planned', 'Planned',
+                'ST 2038 defines how to carry ancillary (ANC) data &mdash; including CEA-708 '
+                'caption packets &mdash; over IP media networks conforming to SMPTE ST 2110. '
+                'Support for SMPTE 2110 ANC output is planned for a future phase once the '
+                'DeckLink SDI interface (Phase 2) is integrated.'
+            ),
+            (
+                'ATSC A/72 &mdash; Captions in ATSC 3.0 (NEXTGEN TV)',
+                'badge-planned', 'Planned',
+                'A/72 defines closed-caption delivery for ATSC 3.0 broadcasts using '
+                'IMSC 1.1 (a profile of TTML). As ATSC 3.0 rollout continues in the US '
+                'and internationally, MicroCaption will add TTML/IMSC output alongside '
+                'the existing CEA-608/708 and WebVTT tracks.'
+            ),
+        ]
+
+        blocks = ''.join(
+            f'<div class="standard-block">'
+            f'<div class="standard-header">'
+            f'<span class="standard-name">{name}</span>'
+            f'<span class="badge {badge_cls}">{badge_lbl}</span>'
+            f'</div>'
+            f'<div class="standard-body">{body_html}</div>'
+            f'</div>'
+            for name, badge_cls, badge_lbl, body_html in standards
+        )
+
+        legend = (
+            '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:32px">'
+            '<span class="badge badge-impl">Implemented</span>'
+            '<span class="badge badge-partial">Partial / conditional</span>'
+            '<span class="badge badge-planned">Planned</span>'
+            '</div>'
+        )
+
+        body = (
+            f'<div style="padding:60px 24px 20px">'
+            f'<div class="hero-eyebrow">Standards &amp; compliance</div>'
+            f'<h2 style="font-size:1.6em;color:#ccc;margin-bottom:12px;font-weight:normal">'
+            f'Broadcast and accessibility standards</h2>'
+            f'<p style="color:#444;font-size:.85em;max-width:640px;line-height:1.65;margin-bottom:40px">'
+            f'MicroCaption is built against the standards used in professional broadcast '
+            f'and web accessibility. The table below lists each relevant specification, '
+            f'its implementation status in the current release, and any important caveats.'
+            f'</p>'
+            f'</div>'
+            f'<div style="max-width:860px;margin:0 auto;padding:0 24px 80px">'
+            f'{legend}'
+            f'<div class="card">{blocks}</div>'
+            f'</div>'
+        )
+        return _pub_wrap('Standards', body)
 
     def _page_queue(self, email: str) -> str:
         with _Handler._queue_lock:
