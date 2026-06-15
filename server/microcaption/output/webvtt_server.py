@@ -472,7 +472,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_login(self) -> None:
         if _Handler._auth is None:
             self.send_response(302)
-            self.send_header('Location', '/dashboard')
+            self.send_header('Location', '/dashboard.html')
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
@@ -519,7 +519,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         self.send_response(302)
-        self.send_header('Location', '/dashboard')
+        self.send_header('Location', '/dashboard.html')
         self._send_cookie('mc_state', '', 0)
         self._send_cookie(
             _Handler._auth.cookie_name,

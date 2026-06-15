@@ -1,3 +1,4 @@
-// API base URL — override with MC_API_URL env var at serve time, or change here for dev.
-// In Docker Compose behind nginx this should be '' (same origin).
-const API = window.MC_API_URL || 'http://localhost:8765';
+// API base URL: localhost dev → explicit port 8765; any proxy/tunnel → same origin
+// (Tailscale funnel routes /api/*, /events/*, /webvtt/* etc. to 8765 transparently).
+const API = window.MC_API_URL ||
+  (window.location.port === '3000' ? 'http://localhost:8765' : window.location.origin);

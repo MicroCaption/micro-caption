@@ -7,8 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Always use `./server/run.sh` to start the caption server — not `python3 main.py` directly. `run.sh` sets the CUDA library path required for Whisper inference:
 
     ./server/run.sh                        # idle server, submit URLs via web UI
-    ./server/run.sh --mock-asr             # fake captions, no GPU or models needed
     ./server/run.sh --youtube "<URL>"      # start and immediately caption a URL
+
+**Always run with live ASR** — this machine has a GPU and Whisper loaded. Never use `--mock-asr` except when running tests with no GPU available (CI, unit testing). Mock mode produces fake captions and is not representative of real behaviour.
 
 For the web UI, run the client dev server separately:
 

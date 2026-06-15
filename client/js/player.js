@@ -1,12 +1,4 @@
-// Read session ID and mode from query params: /player.html?id=<id>&mode=live|replay
-const params = new URLSearchParams(window.location.search);
-const SESSION_ID = params.get('id') || '';
-const MODE = params.get('mode') || 'live';
-
-if (!SESSION_ID) {
-  document.body.innerHTML = '<p style="color:#555;padding:40px;font-family:monospace">No session ID — redirecting…</p>';
-  setTimeout(() => { window.location.href = '/dashboard.html'; }, 1500);
-}
+// SESSION_ID and MODE are declared by the inline script in player.html before this file loads.
 
 // ── Caption rendering ─────────────────────────────────────────────────────────
 const bar    = document.getElementById('caption-bar');
