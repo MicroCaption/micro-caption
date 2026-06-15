@@ -8,8 +8,8 @@ Usage:
   python main.py --mock-asr         # skip model loading; inject placeholder captions
   python main.py --list-devices     # list PulseAudio sources and exit
 
-Open http://localhost:8765/ (or the Tailscale Funnel URL) in a browser,
-paste a YouTube URL, and click Caption.
+Open http://localhost:8765/ in a browser, paste a URL, and click Caption.
+Multiple streams can run concurrently — each gets its own card in the control room.
 
 Environment variable overrides (prefix MC_):
   MC_CONFIG               path to config file
@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import uuid
 
 import yaml
 
@@ -76,12 +77,12 @@ def main() -> None:
         os.execlp('pactl', 'pactl', 'list', 'sources', 'short')
 
     cfg = load_config(args.config)
-
     print(f'[Main] MicroCaption starting — mode: {cfg.get("mode", "test")}')
 
     # ── Deferred imports ──────────────────────────────────────────────────────
+    from microcaption.session import Session
     from microcaption.io.youtube_adapter import YouTubeAdapter
-    from microcaption.asr.pipeline import ASRPipeline, CaptionResult
+    from microcaption.asr.pipeline import ASRPipeline, CaptionResult, SharedASRBackend
     from microcaption.caption.normalizer import CaptionNormalizer
     from microcaption.caption.packetizer_608 import CEA608Packetizer
     from microcaption.caption.packetizer_708 import DTVCC708Packetizer
@@ -90,142 +91,230 @@ def main() -> None:
     from microcaption.output.webvtt_server import WebVTTServer
     from microcaption.output.packet_logger import PacketLogger
 
-    # ── Instantiate caption components ────────────────────────────────────────
+    # ── Shared caption components (stateless, one instance each) ─────────────
     normalizer = CaptionNormalizer(cfg.get('caption', {}).get('normalizer', {}))
     pkt608     = CEA608Packetizer(cfg.get('caption', {}).get('packetizer', {}))
     pkt708     = DTVCC708Packetizer(cfg.get('caption', {}).get('packetizer', {}))
-    vtt_writer = WebVTTWriter()
     terminal   = TerminalSink(cfg.get('output', {}).get('terminal', {}))
     pkt_logger = PacketLogger(cfg.get('caption', {}).get('packet_log', {}))
     pkt_logger.open()
 
     verbose_packets = cfg.get('output', {}).get('packet_log', {}).get('verbose', False)
 
-    # ── ASR pipeline ──────────────────────────────────────────────────────────
-    asr_pipeline = ASRPipeline(cfg.get('asr', {})) if not args.mock_asr else None
+    # ── Shared ASR backend — loaded once, used by all sessions ───────────────
+    shared_backend: SharedASRBackend = None
+    if not args.mock_asr:
+        shared_backend = SharedASRBackend(cfg.get('asr', {}))
+        shared_backend.load()
 
-    # ── Caption handler ───────────────────────────────────────────────────────
-    webvtt_server = None  # assigned below after server starts
+    # ── Session registry ──────────────────────────────────────────────────────
+    _sessions: dict = {}          # session_id → Session
+    _sessions_lock = threading.Lock()
+    webvtt_server = None          # assigned below after server starts
 
-    def on_caption(result: CaptionResult) -> None:
-        norm = normalizer.normalize(result.text)
-        if not norm.lines:
-            return
-        terminal.on_caption(result)
-        if webvtt_server:
-            webvtt_server.on_caption(
-                normalizer.to_display_string(norm),
-                result.start_time,
-                result.end_time,
+    # ── Per-session caption callback factory ──────────────────────────────────
+    def make_caption_callback(session_id: str):
+        def on_caption(result: CaptionResult) -> None:
+            with _sessions_lock:
+                sess = _sessions.get(session_id)
+            if not sess:
+                return
+            norm = normalizer.normalize(result.text)
+            if not norm.lines:
+                return
+            terminal.on_caption(result)
+            if webvtt_server:
+                webvtt_server.on_caption(
+                    normalizer.to_display_string(norm),
+                    result.start_time,
+                    result.end_time,
+                    session_id,
+                )
+            frames608 = pkt608.packetize(norm.lines)
+            raw708, cc_data = pkt708.packetize(norm.lines)
+            dump608 = pkt_logger.log_608(frames608, norm.raw)
+            dump708 = pkt_logger.log_708(raw708, cc_data, norm.raw)
+            if verbose_packets:
+                print(dump608)
+                print(dump708)
+        return on_caption
+
+    # ── Mock injector (per session, --mock-asr mode only) ─────────────────────
+    def _run_mock(session_id: str, caption_cb) -> None:
+        phrases = [
+            'This is a mock caption for pipeline testing.',
+            'The audio and packet layers are active.',
+            'Multiple concurrent streams are supported.',
+            'CEA-608 and CEA-708 packets are being generated.',
+        ]
+        t, idx = 0.0, 0
+        while True:
+            with _sessions_lock:
+                if session_id not in _sessions:
+                    break
+            r = CaptionResult(
+                text=phrases[idx % len(phrases)],
+                start_time=t, end_time=t + 2.0, backend='mock',
             )
-        frames608 = pkt608.packetize(norm.lines)
-        raw708, cc_data = pkt708.packetize(norm.lines)
-        dump608 = pkt_logger.log_608(frames608, norm.raw)
-        dump708 = pkt_logger.log_708(raw708, cc_data, norm.raw)
-        if verbose_packets:
-            print(dump608)
-            print(dump708)
+            caption_cb(r)
+            t += 2.0
+            idx += 1
+            time.sleep(2.0)
 
-    if asr_pipeline:
-        asr_pipeline.set_caption_callback(on_caption)
-        asr_pipeline.start()
-    else:
-        def _mock_injector():
-            from microcaption.asr.pipeline import CaptionResult
-            t, idx = 0.0, 0
-            phrases = [
-                'This is a mock caption for pipeline testing.',
-                'The audio and packet layers are active.',
-                'Waiting for ASR model to be loaded.',
-                'CEA-608 and CEA-708 packets are being generated.',
-            ]
-            while True:
-                r = CaptionResult(text=phrases[idx % len(phrases)],
-                                  start_time=t, end_time=t + 2.0, backend='mock')
-                on_caption(r)
-                t += 2.0
-                idx += 1
-                time.sleep(2.0)
-        threading.Thread(target=_mock_injector, daemon=True, name='mock-asr').start()
+    # ── Session lifecycle ─────────────────────────────────────────────────────
 
-    # ── Session management ────────────────────────────────────────────────────
-    _session_lock = threading.Lock()
-    _current_adapter: list = [None]  # mutable container so closure can write it
-
-    def _stop_current() -> None:
-        """Stop the active adapter (shared by start_session and stop_session)."""
-        with _session_lock:
-            old = _current_adapter[0]
-            if old is not None:
-                try:
-                    old.stop()
-                except Exception:
-                    pass
-            _current_adapter[0] = None
-
-    def stop_session() -> None:
-        """Stop the active session, return UI to the landing page."""
-        print('[Session] Stopping session.')
-        _stop_current()
-        vtt_writer.reset()
-        if asr_pipeline:
-            asr_pipeline._last_text = ''
-
-    def start_session(url: str) -> None:
-        """Stop any running YouTube adapter and start a fresh one for the given URL."""
-        _stop_current()
-
+    def start_session(url: str) -> str:
+        """
+        Register a new session synchronously (returns session_id immediately),
+        then resolve the CDN URL and start the adapter in a background thread.
+        """
+        session_id = uuid.uuid4().hex[:8]
         video_id = _extract_video_id(url)
-        print(f'[Session] Starting new session — video_id={video_id!r}')
+        source_type = 'youtube' if video_id else 'stream'
+        print(f'[Session] Starting {session_id} — type={source_type} url={url[:80]}')
 
-        # Reset state for the new session
-        vtt_writer.reset()
-        if asr_pipeline:
-            asr_pipeline._last_text = ''
+        writer = WebVTTWriter()
+        sess = Session(
+            id=session_id,
+            url=url,
+            video_id=video_id,
+            source_type=source_type,
+            start_time=time.monotonic(),
+            writer=writer,
+            status='starting',
+        )
 
-        # Update the player page immediately so the redirect lands on the right video
+        with _sessions_lock:
+            _sessions[session_id] = sess
         if webvtt_server:
-            webvtt_server.set_video_id(video_id)
+            webvtt_server.register_session(sess)
 
-        # Build and start the new adapter
-        yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
-        yt_cfg['url'] = url
-        adapter = YouTubeAdapter(yt_cfg)
+        caption_cb = make_caption_callback(session_id)
 
-        if asr_pipeline:
-            adapter.set_audio_callback(asr_pipeline.on_audio)
-        else:
-            adapter.set_audio_callback(lambda _: None)
+        def _launch():
+            try:
+                if args.mock_asr:
+                    sess.status = 'live'
+                    _run_mock(session_id, caption_cb)
+                    return
 
-        with _session_lock:
-            _current_adapter[0] = adapter
+                pipeline = ASRPipeline(
+                    cfg.get('asr', {}),
+                    shared_backend=shared_backend,
+                    worker_name=f'asr-{session_id}',
+                )
+                pipeline.set_caption_callback(caption_cb)
 
-        adapter.start()
+                yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
+                yt_cfg['url'] = url
+                adapter = YouTubeAdapter(yt_cfg)
+                adapter.set_audio_callback(pipeline.on_audio)
+
+                sess.adapter = adapter
+                sess.pipeline = pipeline
+
+                pipeline.start()
+                adapter.start()          # blocks during yt-dlp CDN resolve
+                sess.status = 'live'
+
+            except Exception as exc:
+                print(f'[Session] {session_id} failed: {exc}')
+                sess.status = 'error'
+                sess.error = str(exc)
+
+        threading.Thread(
+            target=_launch, daemon=True, name=f'session-start-{session_id}',
+        ).start()
+        return session_id
+
+    def stop_session(session_id: str) -> None:
+        with _sessions_lock:
+            sess = _sessions.pop(session_id, None)
+        if sess is None:
+            return
+        print(f'[Session] Stopping {session_id}')
+        if webvtt_server:
+            webvtt_server.unregister_session(session_id)
+        if sess.adapter:
+            try:
+                sess.adapter.stop()
+            except Exception:
+                pass
+        if sess.pipeline:
+            try:
+                sess.pipeline.stop()
+            except Exception:
+                pass
+
+    # ── Metrics provider ──────────────────────────────────────────────────────
+
+    def _metrics_provider() -> dict:
+        with _sessions_lock:
+            pipelines = [s.pipeline for s in _sessions.values() if s.pipeline]
+        backend_name = (
+            shared_backend.name if shared_backend else
+            ('mock' if args.mock_asr else '—')
+        )
+        if not pipelines:
+            return {'backend': backend_name, 'total': 0}
+
+        monitors = [p.latency_monitor for p in pipelines]
+        total_count = sum(m.count for m in monitors)
+        active = [m for m in monitors if m.count > 0]
+
+        mean = (sum(m.mean_ms for m in active if m.mean_ms) / len(active)
+                if active else None)
+        p95  = max((m.p95_ms  for m in active), default=None)
+        mmax = max((m.max_ms  for m in active), default=None)
+        rate = sum(m.inferences_per_second for m in monitors)
+
+        return {
+            'backend': backend_name,
+            'mean_ms': round(mean, 1) if mean is not None else None,
+            'p95_ms':  round(p95,  1) if p95  is not None else None,
+            'max_ms':  round(mmax, 1) if mmax is not None else None,
+            'rate':    round(rate, 3),
+            'total':   total_count,
+        }
 
     # ── WebVTT / web server ───────────────────────────────────────────────────
     webvtt_cfg = cfg.get('output', {}).get('webvtt', {})
     if webvtt_cfg.get('enabled', True):
         webvtt_server = WebVTTServer(
             webvtt_cfg,
-            vtt_writer,
             start_callback=start_session,
             stop_callback=stop_session,
+            metrics_provider=_metrics_provider,
+            config_snapshot=cfg,
         )
         webvtt_server.start()
         port = webvtt_cfg.get('port', 8765)
-        print(f'[Main] Open http://localhost:{port}/ to submit a YouTube URL')
+        print(f'[Main] Open http://localhost:{port}/ to manage caption streams')
 
     # ── Latency reporter ──────────────────────────────────────────────────────
     report_interval = cfg.get('monitor', {}).get('report_interval', 30)
+
     def _reporter():
         while True:
             time.sleep(report_interval)
-            if asr_pipeline:
-                print(f'[Monitor] {asr_pipeline.latency_monitor.report()}', file=sys.stderr)
+            with _sessions_lock:
+                pipelines = [s.pipeline for s in _sessions.values() if s.pipeline]
+            if not pipelines:
+                continue
+            total = sum(p.latency_monitor.count for p in pipelines)
+            active = [p.latency_monitor for p in pipelines if p.latency_monitor.count > 0]
+            if active:
+                mean = sum(m.mean_ms for m in active if m.mean_ms) / len(active)
+                print(
+                    f'[Monitor] Sessions: {len(pipelines)}  '
+                    f'inferences: {total}  avg-mean: {mean:.0f} ms',
+                    file=sys.stderr,
+                )
+
     threading.Thread(target=_reporter, daemon=True, name='latency-reporter').start()
 
     # ── Block until SIGINT / SIGTERM ──────────────────────────────────────────
-    print('[Main] Pipeline ready. Waiting for YouTube URL via web UI. Ctrl-C to stop.')
+    print('[Main] Control room ready. Ctrl-C to stop.')
     stop_event = threading.Event()
 
     def _sigint(sig, frame):
@@ -236,11 +325,14 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _sigint)
     stop_event.wait()
 
-    with _session_lock:
-        if _current_adapter[0]:
-            _current_adapter[0].stop()
-    if asr_pipeline:
-        asr_pipeline.stop()
+    # Stop all active sessions
+    with _sessions_lock:
+        session_ids = list(_sessions.keys())
+    for sid in session_ids:
+        stop_session(sid)
+
+    if shared_backend:
+        shared_backend.unload()
     if webvtt_server:
         webvtt_server.stop()
     pkt_logger.close()

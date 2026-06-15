@@ -24,10 +24,10 @@ io:
 asr:
   primary: whisper    # parakeet | whisper  (switch back to parakeet once nemo_toolkit is installed)
   chunk_duration: 2.0   # seconds per inference window
-  step_duration: 0.5    # seconds to advance window per step (overlap = chunk - step)
+  step_duration: 1.0    # seconds to advance window per step (overlap = chunk - step)
   max_latency_ms: 2000  # warn if inference exceeds this
   vad_rms_threshold: 1.0e-4
-  vad_hangover_frames: 5
+  vad_hangover_frames: 2
   latency_window: 50    # rolling sample count for latency stats
 
   parakeet:

@@ -25,6 +25,52 @@ CaptionCallback = Callable[[CaptionResult], None]
 _SAMPLE_RATE = 16000
 
 
+class SharedASRBackend:
+    """
+    Thread-safe model wrapper loaded once and shared across per-session
+    ASRPipeline instances.  A single threading.Lock serialises GPU access
+    so multiple sessions can't race into the same inference call.
+    """
+
+    def __init__(self, config: dict) -> None:
+        self._config = config
+        self._lock = threading.Lock()
+        self._backend = None
+        self.name = 'unloaded'
+
+    def load(self) -> None:
+        primary_name = self._config.get('primary', 'parakeet')
+        if primary_name == 'parakeet':
+            try:
+                from .parakeet_backend import ParakeetBackend
+                b = ParakeetBackend(self._config.get('parakeet', {}))
+                b.load()
+                self._backend = b
+                self.name = b.name
+                return
+            except Exception as exc:
+                print(f'[ASR] Parakeet failed ({exc}), falling back to Whisper')
+        from .whisper_backend import WhisperBackend
+        b = WhisperBackend(self._config.get('whisper', {}))
+        b.load()
+        self._backend = b
+        self.name = b.name
+
+    def transcribe(self, samples: np.ndarray) -> str:
+        with self._lock:
+            if self._backend is None:
+                raise RuntimeError('SharedASRBackend not loaded')
+            return self._backend.transcribe(samples)
+
+    def unload(self) -> None:
+        with self._lock:
+            if self._backend is not None:
+                if hasattr(self._backend, 'unload'):
+                    self._backend.unload()
+                self._backend = None
+        self.name = 'unloaded'
+
+
 class ASRPipeline:
     """
     Sliding-window ASR pipeline.
@@ -38,8 +84,11 @@ class ASRPipeline:
     lazily and tried once per chunk — no crash, no dropped frames.
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, shared_backend=None,
+                 worker_name: str = 'asr-worker') -> None:
         self._config = config
+        self._shared_backend: Optional[SharedASRBackend] = shared_backend
+        self._worker_name = worker_name
         self._sr = _SAMPLE_RATE
         self._chunk_samples = int(config.get('chunk_duration', 2.0) * self._sr)
         self._step_samples = int(config.get('step_duration', 0.5) * self._sr)
@@ -66,9 +115,14 @@ class ASRPipeline:
         self._caption_cb = cb
 
     def start(self) -> None:
-        self._load_primary()
+        if self._shared_backend is not None:
+            self._primary = self._shared_backend
+        else:
+            self._load_primary()
         self._running = True
-        self._worker = threading.Thread(target=self._loop, daemon=True, name='asr-worker')
+        self._worker = threading.Thread(
+            target=self._loop, daemon=True, name=self._worker_name,
+        )
         self._worker.start()
 
     def stop(self) -> None:
@@ -163,7 +217,12 @@ class ASRPipeline:
         try:
             return self._primary.transcribe(samples)
         except Exception as exc:
-            print(f'[ASR] Primary error: {exc} — trying fallback')
+            print(f'[ASR] Primary error: {exc}')
+            if self._shared_backend is not None:
+                # Shared backend already handles parakeet→whisper fallback at load time.
+                # Don't try a per-session fallback — it would load a second model.
+                return ''
+            print('[ASR] Trying fallback')
             self._load_fallback()
             if self._fallback:
                 try:

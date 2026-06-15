@@ -40,7 +40,8 @@
       "Bash(curl -s --max-time 10 https://microcap-proto.tail737e71.ts.net/)",
       "Bash(curl -s --max-time 5 http://localhost:8765/)",
       "Bash(./run.sh)",
-      "Bash(curl -s http://localhost:8765/)"
+      "Bash(curl -s http://localhost:8765/)",
+      "Bash(curl -s http://localhost:8765/api/metrics)"
     ]
   }
 }
