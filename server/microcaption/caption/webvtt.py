@@ -51,13 +51,16 @@ class WebVTTWriter:
         self._cue_index += 1
 
     def set_cue_speaker(self, start: float, speaker: str,
-                        tol: float = 0.05) -> bool:
-        """Assign a diarization label to the stored cue whose start matches
-        ``start`` (within ``tol`` seconds). Returns True if a cue was updated.
-        Searches newest-first since the behind-live pass labels recent cues."""
+                        speaker_change: bool = False, tol: float = 0.05) -> bool:
+        """Assign a diarization label (and optional turn mark) to the stored cue
+        whose start matches ``start`` (within ``tol`` seconds). Returns True if a
+        cue was updated. Searches newest-first since the behind-live pass labels
+        recent cues."""
         for cue in reversed(self._cue_data):
             if abs(cue.get('start', 0.0) - start) <= tol:
                 cue['speaker'] = speaker
+                if speaker_change:
+                    cue['speaker_change'] = True
                 return True
         return False
 

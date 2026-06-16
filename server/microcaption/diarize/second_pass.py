@@ -60,6 +60,7 @@ class DiarizationPass:
         self._primed = False
 
         self._cursor = 0          # index of the next un-labelled live cue
+        self._prev_idx = -1       # speaker index of the previous labelled utterance
         self._running = False
         self._worker: Optional[threading.Thread] = None
 
@@ -162,9 +163,20 @@ class DiarizationPass:
             emb = self._embedder.embed(samples)
             idx = self._clusterer.assign(emb)
             speaker = self._clusterer.label(idx)
-            if speaker and self._on_update:
-                updates = [{'start': c.get('start'), 'speaker': speaker}
-                           for c in group]
+            if not speaker:
+                continue
+            # A speaker change is a transition between consecutive utterances'
+            # cluster labels — derived from the same clustering that produces the
+            # SPEAKER N labels, so the ">>" mark and the label can never disagree.
+            changed = self._prev_idx >= 0 and idx != self._prev_idx
+            self._prev_idx = idx
+            if self._on_update:
+                updates = []
+                for k, c in enumerate(group):
+                    upd = {'start': c.get('start'), 'speaker': speaker}
+                    if changed and k == 0:
+                        upd['speaker_change'] = True   # mark the turn boundary
+                    updates.append(upd)
                 try:
                     self._on_update(updates)
                 except Exception as exc:

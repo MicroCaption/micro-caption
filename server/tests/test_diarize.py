@@ -133,6 +133,30 @@ class ClustererTests(unittest.TestCase):
         self.assertEqual(self.c.assign(None), -1)
         self.assertEqual(self.c.num_speakers, 0)
 
+    def test_centering_separates_speakers_with_shared_channel(self):
+        # Real embeddings carry a large shared component (channel/room/codec) plus
+        # a small per-speaker component, so RAW cosine between *different*
+        # speakers is ~1 and naive clustering merges everyone. The clusterer's
+        # mean-normalisation must recover the two-speaker structure.
+        common = np.zeros(16, dtype=np.float32); common[0] = 6.0
+
+        def emb(spk):
+            v = common.copy(); v[1 + spk] = 1.0
+            return (v / np.linalg.norm(v)).astype(np.float32)
+
+        # Sanity: raw cosine between the two speakers is dominated by `common`.
+        self.assertGreater(cosine(emb(0), emb(1)), 0.95)
+
+        c = OnlineSpeakerClusterer(
+            {'second_pass': {'cluster_threshold': 0.1, 'center_warmup': 2}})
+        seq = [c.assign(emb(s)) for s in [0, 0, 0, 1, 1, 1, 0, 0, 1, 1]]
+        # Two speakers recovered despite the shared component (the pre-centering
+        # bug produced exactly one).
+        self.assertEqual(c.num_speakers, 2)
+        # Post-warmup, each speaker maps to a single stable id.
+        self.assertEqual(seq[-1], seq[4])      # speaker 1 windows agree
+        self.assertNotEqual(seq[-1], seq[-3])  # speaker 0 vs speaker 1 differ
+
 
 class SpeakerMarkerTests(unittest.TestCase):
     def test_marker_precedence(self):

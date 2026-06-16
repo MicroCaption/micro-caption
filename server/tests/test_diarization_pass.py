@@ -68,6 +68,12 @@ class DiarizationPassTests(unittest.TestCase):
         self.assertEqual(by_start[0.0], 'SPEAKER 1')
         self.assertEqual(by_start[3.0], 'SPEAKER 2')
         self.assertEqual(self.dp.num_speakers, 2)
+        # The turn boundary is marked on the first cue of the new speaker only,
+        # and NOT on the very first utterance (no prior speaker to change from).
+        changes = {u['start']: u.get('speaker_change', False)
+                   for upd in self.updates for u in upd}
+        self.assertFalse(changes[0.0])      # first speaker: no change mark
+        self.assertTrue(changes[3.0])       # SPEAKER 1 -> SPEAKER 2 boundary
 
     def test_returning_speaker_keeps_first_number(self):
         self.cues = [

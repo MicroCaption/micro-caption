@@ -146,6 +146,7 @@ es.addEventListener('speaker', e => {
     for (let i = allCues.length - 1; i >= 0; i--) {
       if (Math.abs(allCues[i].start - start) <= 0.05) {
         allCues[i].speaker = u.speaker;
+        if (u.speaker_change) allCues[i].speaker_change = true;
         break;
       }
     }

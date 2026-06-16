@@ -223,7 +223,8 @@ def main() -> None:
                 return
             changed = False
             for u in updates:
-                if sess.writer.set_cue_speaker(u['start'], u['speaker']):
+                if sess.writer.set_cue_speaker(
+                        u['start'], u['speaker'], u.get('speaker_change', False)):
                     changed = True
             if not changed:
                 return

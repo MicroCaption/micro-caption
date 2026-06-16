@@ -90,10 +90,16 @@ diarize:
   device: cpu              # cpu keeps the embedder off the shared Whisper GPU lock
   num_threads: 1           # ONNX intra-op threads for the embedder
   min_utterance_seconds: 0.8   # skip utterances shorter than this (e.g. "Aye"/"Nay")
+  # NOTE: embeddings are MEAN-NORMALISED (centered) before comparison — raw
+  # WeSpeaker vectors share a channel component that pins different speakers near
+  # ~0.7 cosine, so thresholds below are cosine similarities in the CENTERED
+  # space (~ -1..1): same speaker is positive, different is negative.
   live:
-    change_threshold: 0.55     # cosine DISTANCE above which a new utterance = new speaker
+    change_threshold: 0.10     # consecutive utterances BELOW this centered-cosine = speaker change
+    center_warmup: 3           # utterances seen before the running mean is trusted
   second_pass:
-    cluster_threshold: 0.45    # cosine SIMILARITY below which an utterance = new speaker
+    cluster_threshold: 0.10    # centered cosine: assign to an existing speaker if >= this, else new
+    center_warmup: 5           # embeddings before centering kicks in (raw-merge until then)
     settle_seconds: 5.0        # wait this long after a span before labelling (live commits first)
     utterance_gap_seconds: 0.8 # inter-cue gap that splits one utterance from the next
     max_utterance_seconds: 10.0 # cap span length so continuous speech is still chopped + labelled
