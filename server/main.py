@@ -119,6 +119,7 @@ def main() -> None:
     # ── Deferred imports ──────────────────────────────────────────────────────
     from microcaption.session import Session
     from microcaption.io.youtube_adapter import YouTubeAdapter
+    from microcaption.io.stream_adapter import StreamAdapter
     from microcaption.asr.pipeline import ASRPipeline, CaptionResult, SharedASRBackend
     from microcaption.caption.normalizer import CaptionNormalizer
     from microcaption.caption.packetizer_608 import CEA608Packetizer
@@ -271,9 +272,16 @@ def main() -> None:
                 )
                 pipeline.set_caption_callback(caption_cb)
 
-                yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
-                yt_cfg['url'] = url
-                adapter = YouTubeAdapter(yt_cfg)
+                if StreamAdapter.handles(url):
+                    # Live broadcast source (rtmp/rtsp/srt): GStreamer reads it
+                    # directly, no yt-dlp resolve step.
+                    stream_cfg = dict(cfg.get('io', {}).get('stream', {}))
+                    stream_cfg['url'] = url
+                    adapter = StreamAdapter(stream_cfg)
+                else:
+                    yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
+                    yt_cfg['url'] = url
+                    adapter = YouTubeAdapter(yt_cfg)
                 adapter.set_audio_callback(pipeline.on_audio)
                 adapter.set_end_callback(_on_source_end)
 
