@@ -41,7 +41,9 @@ async function initReplay() {
 }
 
 function replayTick() {
-  if (!window.ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+  // `ytPlayer` is a top-level `let`, so it is NOT a property of `window`
+  // (only `var`/globals are) — guard on the binding itself.
+  if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
   const t = ytPlayer.getCurrentTime();
   // Stitch the trailing fragments up to the current playback time into ~2 lines.
   const parts = [];
