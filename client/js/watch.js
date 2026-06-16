@@ -42,7 +42,9 @@ es.addEventListener('cue', e => {
   const d = JSON.parse(e.data);
   const text = d.text || (d.lines || []).join(' ');
   stat.textContent = 'LIVE'; stat.className = 'live';
-  pacer.push(text, parseFloat(d.start), parseFloat(d.end));
+  // Live best-effort CEA-608/708 speaker-change mark, stitched inline.
+  const prefix = d.speaker_change ? '>> ' : '';
+  pacer.push(prefix + text, parseFloat(d.start), parseFloat(d.end));
 });
 
 es.onopen = () => {

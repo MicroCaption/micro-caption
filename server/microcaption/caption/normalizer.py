@@ -1,13 +1,38 @@
 import re
 import textwrap
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
 class NormalizedCaption:
     lines: List[str]
     raw: str
+
+
+def speaker_marker(speaker: Optional[str] = None,
+                   speaker_change: bool = False) -> str:
+    """CEA-608/708 speaker prefix for a caption fragment.
+
+    '>> SPEAKER 1: ' when a label is known (behind-live diarization),
+    '>> '           for a bare speaker-change mark (live, best-effort),
+    ''              when neither applies.
+    """
+    if speaker:
+        return f'>> {speaker}: '
+    if speaker_change:
+        return '>> '
+    return ''
+
+
+def apply_speaker_marker(lines: List[str], speaker: Optional[str] = None,
+                         speaker_change: bool = False) -> List[str]:
+    """Prepend the speaker marker to the first display line (for byte-level
+    CEA-608/708 packetization). Returns a new list; input is unchanged."""
+    prefix = speaker_marker(speaker, speaker_change)
+    if not prefix or not lines:
+        return list(lines)
+    return [prefix + lines[0]] + list(lines[1:])
 
 
 class CaptionNormalizer:

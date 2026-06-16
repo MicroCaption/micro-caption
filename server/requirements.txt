@@ -15,6 +15,11 @@ nemo_toolkit[asr]
 # ASR — fallback (ctranslate2 may need a cp314 wheel; install separately if this fails)
 faster-whisper
 
+# Speaker diarization — ONNX speaker embeddings (cp314 wheel available; no torch).
+# Models downloaded separately into server/models/ (see diarize.model in settings.yaml):
+#   https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models
+sherpa-onnx
+
 # Config
 pyyaml>=6.0
 

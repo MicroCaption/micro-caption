@@ -120,7 +120,10 @@ def main() -> None:
     from microcaption.session import Session
     from microcaption.io.youtube_adapter import YouTubeAdapter
     from microcaption.asr.pipeline import ASRPipeline, CaptionResult, SharedASRBackend
-    from microcaption.caption.normalizer import CaptionNormalizer
+    from microcaption.caption.normalizer import CaptionNormalizer, apply_speaker_marker
+    from microcaption.diarize import (
+        SpeakerEmbedder, SpeakerChangeDetector, DiarizationPass,
+    )
     from microcaption.caption.packetizer_608 import CEA608Packetizer
     from microcaption.caption.packetizer_708 import DTVCC708Packetizer
     from microcaption.caption.webvtt import WebVTTWriter
@@ -158,6 +161,18 @@ def main() -> None:
     if not args.mock_asr:
         shared_backend = SharedASRBackend(cfg.get('asr', {}))
         shared_backend.load()
+
+    # ── Shared speaker-embedding model — loaded once for diarization ─────────
+    # Degrades cleanly: if the model can't load, embedder.available is False and
+    # the whole speaker layer no-ops (no ">>" marks, no SPEAKER labels).
+    diar_cfg = cfg.get('diarize', {})
+    diar_enabled = diar_cfg.get('enabled', False) and not args.mock_asr
+    speaker_embedder = None
+    if diar_enabled:
+        speaker_embedder = SpeakerEmbedder(diar_cfg)
+        speaker_embedder.load()
+        if not speaker_embedder.available:
+            print(f'[Diarize] disabled — {speaker_embedder.load_error}')
 
     # ── Session registry ──────────────────────────────────────────────────────
     _sessions: dict = {}          # session_id → Session
@@ -197,6 +212,26 @@ def main() -> None:
             store.save(_summary_of(sess), _detail_of(sess))
         return on_record
 
+    def make_diar_update_callback(session_id: str):
+        """Behind-live diarization has assigned SPEAKER N labels to committed
+        cues — write them onto the stored cues, tell replay/archive consumers,
+        and re-checkpoint the persisted log."""
+        def on_update(updates: list) -> None:
+            with _sessions_lock:
+                sess = _sessions.get(session_id)
+            if not sess or not sess.writer:
+                return
+            changed = False
+            for u in updates:
+                if sess.writer.set_cue_speaker(u['start'], u['speaker']):
+                    changed = True
+            if not changed:
+                return
+            if webvtt_server:
+                webvtt_server.push_speaker_update(session_id, updates)
+            store.save(_summary_of(sess), _detail_of(sess))
+        return on_update
+
     # ── Per-session caption callback factory ──────────────────────────────────
     def make_caption_callback(session_id: str):
         def on_caption(result: CaptionResult) -> None:
@@ -213,14 +248,20 @@ def main() -> None:
                 return
             terminal.on_caption(result)
             if webvtt_server:
+                # Send the words + the live ">>" flag; the client renders the
+                # marker so it can be styled separately from the caption text.
                 webvtt_server.on_caption(
                     normalizer.to_display_string(norm),
                     result.start_time,
                     result.end_time,
                     session_id,
+                    speaker_change=result.speaker_change,
                 )
-            frames608 = pkt608.packetize(norm.lines)
-            raw708, cc_data = pkt708.packetize(norm.lines)
+            # For byte-level CEA-608/708, the ">>" mark is literal characters, so
+            # bake it into the first line before packetizing.
+            lines608 = apply_speaker_marker(norm.lines, speaker_change=result.speaker_change)
+            frames608 = pkt608.packetize(lines608)
+            raw708, cc_data = pkt708.packetize(lines608)
             dump608 = pkt_logger.log_608(frames608, norm.raw)
             dump708 = pkt_logger.log_708(raw708, cc_data, norm.raw)
             if verbose_packets:
@@ -298,6 +339,11 @@ def main() -> None:
                     sess.verifier.stop()
                 except Exception:
                     pass
+            if sess.diarizer:
+                try:
+                    sess.diarizer.stop()
+                except Exception:
+                    pass
             if sess.pipeline:
                 try:
                     sess.pipeline.stop()
@@ -314,10 +360,20 @@ def main() -> None:
                     return
 
                 asr_cfg = cfg.get('asr', {})
+
+                # Live speaker-change detection (">>" marks). Per-session state
+                # (previous-utterance embedding), shared embedding model. None
+                # when diarization is disabled/unavailable → no live marks.
+                change_fn = None
+                if speaker_embedder and speaker_embedder.available:
+                    detector = SpeakerChangeDetector(speaker_embedder, diar_cfg)
+                    change_fn = detector.is_change
+
                 pipeline = ASRPipeline(
                     asr_cfg,
                     shared_backend=shared_backend,
                     worker_name=f'asr-{session_id}',
+                    speaker_change_fn=change_fn,
                 )
                 pipeline.set_caption_callback(caption_cb)
 
@@ -333,6 +389,18 @@ def main() -> None:
                     )
                     sess.verifier = verifier
 
+                # Behind-live diarization pass — stable SPEAKER N labels written
+                # back onto stored cues. Never blocks live.
+                diarizer = None
+                if speaker_embedder and speaker_embedder.available:
+                    diarizer = DiarizationPass(
+                        speaker_embedder, diar_cfg,
+                        get_live_cues=sess.writer.all_cue_data,
+                        on_update=make_diar_update_callback(session_id),
+                        worker_name=f'diarizer-{session_id}',
+                    )
+                    sess.diarizer = diarizer
+
                 yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
                 yt_cfg['url'] = url
                 adapter = YouTubeAdapter(yt_cfg)
@@ -341,6 +409,8 @@ def main() -> None:
                     pipeline.on_audio(chunk)
                     if verifier:
                         verifier.on_audio(chunk)
+                    if diarizer:
+                        diarizer.on_audio(chunk)
                 adapter.set_audio_callback(_feed_audio)
                 adapter.set_end_callback(_on_source_end)
 
@@ -350,6 +420,8 @@ def main() -> None:
                 pipeline.start()
                 if verifier:
                     verifier.start()
+                if diarizer:
+                    diarizer.start()
                 adapter.start()          # blocks during yt-dlp CDN resolve
                 if sess.status != 'ended':   # a very short clip may EOS already
                     sess.status = 'live'
@@ -381,6 +453,11 @@ def main() -> None:
         if sess.verifier:
             try:
                 sess.verifier.stop()
+            except Exception:
+                pass
+        if sess.diarizer:
+            try:
+                sess.diarizer.stop()
             except Exception:
                 pass
         if sess.pipeline:

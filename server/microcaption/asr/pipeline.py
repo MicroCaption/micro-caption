@@ -19,6 +19,11 @@ class CaptionResult:
     end_time: float
     confidence: float = 1.0
     backend: str = 'unknown'
+    # Live diarization: True on the first fragment of an utterance whose speaker
+    # differs from the previous utterance — rendered as the CEA-608/708 ">>"
+    # speaker-change mark. Best-effort; stable SPEAKER N labels come from the
+    # behind-live DiarizationPass.
+    speaker_change: bool = False
 
 
 CaptionCallback = Callable[[CaptionResult], None]
@@ -189,10 +194,14 @@ class ASRPipeline:
     """
 
     def __init__(self, config: dict, shared_backend=None,
-                 worker_name: str = 'asr-worker') -> None:
+                 worker_name: str = 'asr-worker',
+                 speaker_change_fn: Optional[Callable[[np.ndarray], bool]] = None) -> None:
         self._config = config
         self._shared_backend: Optional[SharedASRBackend] = shared_backend
         self._worker_name = worker_name
+        # Optional live diarization hook: given the current utterance's audio,
+        # returns True if it's a new speaker. None disables live ">>" marks.
+        self._speaker_change_fn = speaker_change_fn
         self._sr = _SAMPLE_RATE
         self._chunk_samples = int(config.get('chunk_duration', 2.0) * self._sr)
         self._step_samples = int(config.get('step_duration', 0.5) * self._sr)
@@ -308,7 +317,7 @@ class ASRPipeline:
         else:
             self._loop_legacy()
 
-    def _emit(self, committed: List[Word]) -> None:
+    def _emit(self, committed: List[Word], speaker_change: bool = False) -> None:
         from ..caption.corrector import correct_fragment, last_word
         raw = ''.join(w[2] for w in committed)
         text = correct_fragment(raw, self._last_word)
@@ -320,6 +329,7 @@ class ASRPipeline:
             start_time=committed[0][0],
             end_time=committed[-1][1],
             backend=getattr(self._primary, 'name', 'unknown'),
+            speaker_change=speaker_change,
         )
         if self._caption_cb:
             self._caption_cb(result)
@@ -342,6 +352,7 @@ class ASRPipeline:
         abs_time = 0.0          # absolute stream time at the end of buf
         pending = 0             # new samples since the last inference
         had_speech = False      # speech seen since the last utterance flush
+        awaiting_first_emit = True   # next emit is the first of a new utterance
         hyp = HypothesisBuffer()
 
         while self._running:
@@ -390,12 +401,23 @@ class ASRPipeline:
                 committed = committed + hyp.flush_final()
 
             if committed:
-                self._emit(committed)
+                # On the first emitted fragment of an utterance, ask the live
+                # diarization hook whether the speaker changed (→ ">>" mark).
+                # buf currently holds this utterance's audio, before trimming.
+                change = False
+                if awaiting_first_emit and self._speaker_change_fn is not None:
+                    try:
+                        change = bool(self._speaker_change_fn(buf.copy()))
+                    except Exception as exc:
+                        print(f'[ASR] speaker-change hook failed: {exc}')
+                    awaiting_first_emit = False
+                self._emit(committed, speaker_change=change)
 
             if utterance_end:
                 # Utterance finished — reset and drop the committed/silent audio.
                 hyp = HypothesisBuffer()
                 had_speech = False
+                awaiting_first_emit = True
                 self._last_word = ''   # don't de-dup across an utterance boundary
                 buf = buf[-self._min_chunk_samples:]
             else:

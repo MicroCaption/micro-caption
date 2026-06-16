@@ -74,6 +74,30 @@ accuracy:
   retain_sessions: 20      # keep the most recent N streams on disk; prune older
   checkpoint_seconds: 5.0  # min interval between incremental disk checkpoints
 
+# ── Speaker diarization (who is speaking) ──────────────────────────────────────
+# Two tiers mirroring the verifier's live/behind-live split:
+#   • live: one embedding per utterance → CEA-608/708 ">>" speaker-change mark
+#   • second_pass: cluster utterances behind live → stable "SPEAKER N" labels
+# Degrades cleanly: if the ONNX model can't load, the whole layer no-ops and the
+# caption pipeline is unchanged. Override anything via MC_DIARIZE_* env vars.
+diarize:
+  enabled: true            # speaker notation on (model present in server/models/)
+  # sherpa-onnx speaker-embedding model — a local .onnx path. Download one from
+  #   https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models
+  # e.g.  wespeaker_en_voxceleb_resnet34_LM.onnx  (English, 16 kHz, ~25 MB).
+  # Empty / missing file → diarization disabled (pipeline unaffected).
+  model: models/wespeaker_en_voxceleb_resnet34_LM.onnx
+  device: cpu              # cpu keeps the embedder off the shared Whisper GPU lock
+  num_threads: 1           # ONNX intra-op threads for the embedder
+  min_utterance_seconds: 0.8   # skip utterances shorter than this (e.g. "Aye"/"Nay")
+  live:
+    change_threshold: 0.55     # cosine DISTANCE above which a new utterance = new speaker
+  second_pass:
+    cluster_threshold: 0.45    # cosine SIMILARITY below which an utterance = new speaker
+    settle_seconds: 5.0        # wait this long after a span before labelling (live commits first)
+    utterance_gap_seconds: 0.8 # inter-cue gap that splits one utterance from the next
+    context_seconds: 0.25      # audio padding around each utterance slice
+
 # ── Caption processing ────────────────────────────────────────────────────────
 caption:
   normalizer:

@@ -6,6 +6,7 @@ and a one-line row here.
 
 | # | Date | Branch | Focus |
 |---|------|--------|-------|
+| [9](DEVLOG_SESSION9_2026-06-16_13-30.md) | 2026-06-16 | `feat/adding-logger-and-accuracy-checker` | Speaker notation: live `>>` change marks + behind-live `SPEAKER N` diarization (sherpa-onnx embeddings on Python 3.14, no torch) |
 | [8](DEVLOG_SESSION8_2026-06-16_12-15.md) | 2026-06-16 | `feat/adding-logger-and-accuracy-checker` | Accuracy-first captioning; dual-pass verifier scoring live captions; per-stream logs UI + filesystem persistence |
 | [7](DEVLOG_SESSION7_2026-06-16_01-55.md) | 2026-06-16 | `feat/make-captions-readable` | Diagnose bursty GPU readings; honest duty-cycle chart (fast poll + rolling average) |
 | [6](DEVLOG_SESSION6_2026-06-15_23-23.md) | 2026-06-15 | `feat/make-captions-readable` | GPU monitoring readout + real-time performance charts on the Monitor page |

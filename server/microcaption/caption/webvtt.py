@@ -30,16 +30,36 @@ class WebVTTWriter:
         self._cue_index = 1
 
     def add_cue(self, text: str, start: float, end: float,
-                position: str = 'line:90%,end align:center') -> None:
-        """Append a WebVTT cue."""
+                position: str = 'line:90%,end align:center',
+                speaker: 'str | None' = None,
+                speaker_change: bool = False) -> None:
+        """Append a WebVTT cue.
+
+        ``speaker`` is the stable diarization label ('SPEAKER 1', filled in later
+        by the behind-live pass; None until then). ``speaker_change`` is the live
+        best-effort turn mark (``>>``)."""
         cue = (
             f'{self._cue_index}\n'
             f'{_fmt_time(start)} --> {_fmt_time(end)} {position}\n'
             f'{text}\n'
         )
         self._cues.append(cue)
-        self._cue_data.append({'start': start, 'end': end, 'text': text})
+        self._cue_data.append({
+            'start': start, 'end': end, 'text': text,
+            'speaker': speaker, 'speaker_change': speaker_change,
+        })
         self._cue_index += 1
+
+    def set_cue_speaker(self, start: float, speaker: str,
+                        tol: float = 0.05) -> bool:
+        """Assign a diarization label to the stored cue whose start matches
+        ``start`` (within ``tol`` seconds). Returns True if a cue was updated.
+        Searches newest-first since the behind-live pass labels recent cues."""
+        for cue in reversed(self._cue_data):
+            if abs(cue.get('start', 0.0) - start) <= tol:
+                cue['speaker'] = speaker
+                return True
+        return False
 
     def header(self) -> str:
         return 'WEBVTT\n\n'

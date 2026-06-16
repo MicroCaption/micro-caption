@@ -118,6 +118,27 @@ class TestCEA608Packetizer(unittest.TestCase):
         # After CR there must be at least one text frame
         self.assertGreater(len(frames) - cr_idx, 1)
 
+
+class TestSpeakerMarker608(unittest.TestCase):
+    """The diarization '>>' speaker mark must survive byte-level packetization."""
+
+    def test_marker_chars_encode_as_literal_gt(self):
+        # '>' = 0x3E has odd parity already, so both bytes stay 0x3E.
+        frames = encode_text('>> ')
+        self.assertEqual(frames[0], (0x3E, 0x3E))
+
+    def test_marker_changes_the_packetized_stream(self):
+        from microcaption.caption.normalizer import apply_speaker_marker
+        p1 = CEA608Packetizer({'rollup_rows': 2})
+        p2 = CEA608Packetizer({'rollup_rows': 2})
+        plain = p1.packetize(['hello'])
+        marked = p2.packetize(apply_speaker_marker(['hello'], speaker_change=True))
+        # The marked line carries the extra '>> ' glyphs, so it must be longer
+        # and must contain the '>' byte pair the plain line does not.
+        self.assertGreater(len(marked), len(plain))
+        self.assertIn((0x3E, 0x3E), marked)
+        self.assertNotIn((0x3E, 0x3E), plain)
+
     def test_two_lines_two_crs(self):
         p = CEA608Packetizer({'rollup_rows': 2})
         frames = p.packetize(['Line one', 'Line two'])

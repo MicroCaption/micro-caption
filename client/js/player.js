@@ -19,6 +19,15 @@ function renderLines(lines) {
 // Reading-paced display for the live SSE stream.
 const pacer = new CaptionPacer(renderLines);
 
+// CEA-608/708 speaker prefix: a known label wins ('>> SPEAKER 1: '), else a bare
+// turn mark ('>> '), else nothing. `speaker` (stable, from the behind-live pass)
+// upgrades the live `speakerChange` mark once it arrives.
+function speakerPrefix(speaker, speakerChange) {
+  if (speaker) return '>> ' + speaker + ': ';
+  if (speakerChange) return '>> ';
+  return '';
+}
+
 // ── Stop button ───────────────────────────────────────────────────────────────
 async function stopSession() {
   await fetch(API + '/api/stop/' + SESSION_ID, { method: 'POST' });
@@ -45,15 +54,17 @@ function replayTick() {
   // (only `var`/globals are) — guard on the binding itself.
   if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
   const t = ytPlayer.getCurrentTime();
-  // Stitch the trailing fragments up to the current playback time into ~2 lines.
-  const parts = [];
+  // Stitch the trailing fragments up to current playback time into ~2 lines,
+  // prefixing each cue with its (now-resolved) speaker label / turn mark.
+  const cues = [];
   for (let i = allCues.length - 1; i >= 0; i--) {
     if (allCues[i].start > t) continue;
-    parts.push(allCues[i].text);
-    if (parts.join(' ').length > 80) break;
+    const c = allCues[i];
+    cues.push(speakerPrefix(c.speaker, c.speaker_change) + c.text);
+    if (cues.join(' ').length > 80) break;
   }
-  parts.reverse();
-  const text = parts.join(' ');
+  cues.reverse();
+  const text = cues.join(' ');
   if (text === _lastReplayText) return;
   _lastReplayText = text;
   renderLines(wrapLines(text));
@@ -111,11 +122,35 @@ es.addEventListener('cue', e => {
   status.className = 'live';
   const text = d.text || (d.lines || []).join(' ');
   if (MODE === 'replay') {
-    // In replay mode SSE cues are appended to the replay buffer.
-    allCues.push({ start: parseFloat(d.start), end: parseFloat(d.end), text });
+    // In replay mode SSE cues are appended to the replay buffer; prefix is
+    // applied at render time (and may be upgraded by a later 'speaker' event).
+    allCues.push({
+      start: parseFloat(d.start), end: parseFloat(d.end), text,
+      speaker: d.speaker || null, speaker_change: !!d.speaker_change,
+    });
   } else {
-    pacer.push(text, parseFloat(d.start), parseFloat(d.end));
+    // Live: only the best-effort '>>' turn mark is available; stitch it inline.
+    pacer.push(speakerPrefix(null, d.speaker_change) + text,
+               parseFloat(d.start), parseFloat(d.end));
   }
+});
+
+// Behind-live diarization resolved stable SPEAKER N labels for earlier cues.
+// Relabel the replay buffer; the live roll-up is not retroactively edited.
+es.addEventListener('speaker', e => {
+  if (MODE !== 'replay') return;
+  let d;
+  try { d = JSON.parse(e.data); } catch (_) { return; }
+  for (const u of (d.updates || [])) {
+    const start = parseFloat(u.start);
+    for (let i = allCues.length - 1; i >= 0; i--) {
+      if (Math.abs(allCues[i].start - start) <= 0.05) {
+        allCues[i].speaker = u.speaker;
+        break;
+      }
+    }
+  }
+  _lastReplayText = null;   // force a re-render with the new label
 });
 
 es.onopen = () => {

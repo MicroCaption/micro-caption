@@ -23,6 +23,10 @@ env/
 logs/
 *.log
 
+# Diarization / ASR model binaries (downloaded, not committed)
+server/models/
+*.onnx
+
 # Environment / secrets
 .env
 *.env

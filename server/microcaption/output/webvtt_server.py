@@ -461,13 +461,16 @@ class _Handler(BaseHTTPRequestHandler):
                 if self in sess.sse_clients:
                     sess.sse_clients.remove(self)
 
-    def push_cue(self, cue_json: str) -> bool:
+    def push_event(self, event: str, data_json: str) -> bool:
         try:
-            self.wfile.write(f'event: cue\ndata: {cue_json}\n\n'.encode())
+            self.wfile.write(f'event: {event}\ndata: {data_json}\n\n'.encode())
             self.wfile.flush()
             return True
         except (BrokenPipeError, ConnectionResetError):
             return False
+
+    def push_cue(self, cue_json: str) -> bool:
+        return self.push_event('cue', cue_json)
 
     def _sse_watch_stream(self, code: str) -> None:
         with _Handler._code_lock:
@@ -669,23 +672,39 @@ class WebVTTServer:
             self._server.shutdown()
 
     def on_caption(self, text: str, start: float, end: float,
-                   session_id: str) -> None:
+                   session_id: str, speaker_change: bool = False) -> None:
         sess = _Handler._session_registry.get(session_id)
         if sess is None:
             return
-        sess.writer.add_cue(text, start, end)
+        sess.writer.add_cue(text, start, end, speaker_change=speaker_change)
         sess.recent_cues.append({'ts': time.strftime('%H:%M:%S'), 'text': text})
         cue_json = json.dumps({
             'text': text,
             'lines': [ln for ln in text.split('\n') if ln.strip()],
             'start': f'{start:.3f}',
             'end': f'{end:.3f}',
+            # Live best-effort turn mark; stable SPEAKER N labels arrive later via
+            # the 'speaker' SSE event / persisted cues.
+            'speaker_change': speaker_change,
         })
+        self._fanout(sess, 'cue', cue_json)
+
+    def push_speaker_update(self, session_id: str, updates: list) -> None:
+        """Fan out behind-live diarization labels for already-sent cues. Each
+        update is {'start': float, 'speaker': 'SPEAKER N'}; replay/archive
+        consumers relabel their cues. Live roll-up is not retroactively edited."""
+        sess = _Handler._session_registry.get(session_id)
+        if sess is None or not updates:
+            return
+        self._fanout(sess, 'speaker', json.dumps({'updates': updates}))
+
+    @staticmethod
+    def _fanout(sess, event: str, data_json: str) -> None:
         dead = []
         with sess.sse_lock:
             clients = list(sess.sse_clients)
         for client in clients:
-            if not client.push_cue(cue_json):
+            if not client.push_event(event, data_json):
                 dead.append(client)
         if dead:
             with sess.sse_lock:

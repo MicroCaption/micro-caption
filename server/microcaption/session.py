@@ -16,6 +16,7 @@ class Session:
     adapter: Any = None   # YouTubeAdapter — set after CDN resolve
     pipeline: Any = None  # ASRPipeline — set after backend starts
     verifier: Any = None  # AccuracyVerifier — second-pass accuracy scoring
+    diarizer: Any = None  # DiarizationPass — behind-live SPEAKER N labelling
     recent_cues: Deque = field(default_factory=lambda: deque(maxlen=50))
     # Per-segment accuracy comparison records (verifier ref vs live captions).
     accuracy_records: Deque = field(default_factory=lambda: deque(maxlen=500))
