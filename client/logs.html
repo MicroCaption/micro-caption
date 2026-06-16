@@ -4,6 +4,49 @@
   <meta charset="utf-8">
   <title>MicroCaption &mdash; Logs</title>
   <link rel="stylesheet" href="/css/shared.css">
+  <style>
+    /* Heroic-style log manager: sources sidebar + viewer pane. */
+    .logmgr { display: flex; height: calc(100vh - 46px); }
+    .log-side {
+      width: 280px; flex: 0 0 280px; border-right: 1px solid #181818;
+      overflow-y: auto; padding: 10px 0;
+    }
+    .log-group-h {
+      color: #3a3a3a; font-size: 0.66em; letter-spacing: 0.14em;
+      text-transform: uppercase; padding: 12px 16px 5px;
+    }
+    .log-item {
+      display: flex; align-items: center; gap: 8px; cursor: pointer;
+      padding: 7px 16px; color: #888; font-size: 0.84em; border-left: 2px solid transparent;
+    }
+    .log-item:hover { background: #131313; color: #cfcfcf; }
+    .log-item.active { background: #181818; color: #fff; border-left-color: #3a9a4a; }
+    .log-item .li-main { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-item .li-sub { color: #444; font-size: 0.82em; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; }
+
+    .log-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .log-head {
+      display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+      border-bottom: 1px solid #181818;
+    }
+    .log-title { color: #ddd; font-size: 0.95em; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-meta { color: #555; font-size: 0.74em; }
+    .log-actions { display: flex; gap: 6px; align-items: center; }
+    .log-body { flex: 1; overflow: auto; padding: 14px 18px; }
+    pre.log-pre {
+      margin: 0; white-space: pre-wrap; word-break: break-word;
+      font-size: 0.78em; line-height: 1.55; color: #7a9a7a;
+    }
+    .cue-row { display: flex; gap: 12px; padding: 3px 0; font-size: 0.82em; line-height: 1.5; }
+    .cue-t { color: #4a6a4a; flex: 0 0 64px; text-align: right; }
+    .cue-spk { color: #6a6a9a; flex: 0 0 90px; }
+    .cue-x { color: #cfcfcf; flex: 1; }
+    .acc-bar { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #161616; }
+    .toggle { color: #666; font-size: 0.78em; cursor: pointer; user-select: none; }
+    .toggle.on { color: #3a9a4a; }
+    .empty { color: #333; font-style: italic; padding: 24px; }
+  </style>
 </head>
 <body>
 <nav>
@@ -15,42 +58,22 @@
   <a href="/logs" class="nav-link active">Logs</a>
   <a href="/logout" class="nav-link">Log out</a>
 </nav>
-<main>
-  <h2>Recent captions</h2>
-  <div class="card">
-    <table>
-      <thead><tr><th>Time</th><th>Session</th><th>Caption</th></tr></thead>
-      <tbody id="logs-tbody">
-        <tr><td colspan="3" class="stub">Loading…</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p style="margin-top:8px;font-size:.75em;color:#333">
-    <span class="stub">WebVTT download per session via the player page &mdash; SRT / PDF export Phase 2</span>
-  </p>
-  <h2 style="margin-top:20px">Packet logs</h2>
-  <div class="card"><p class="stub">Live packet log viewer — Phase 2</p></div>
-</main>
+<div class="logmgr">
+  <aside class="log-side" id="log-side">
+    <div class="empty">Loading sources…</div>
+  </aside>
+  <section class="log-main">
+    <div class="log-head">
+      <div class="log-title" id="log-title">Select a log</div>
+      <div class="log-meta" id="log-meta"></div>
+      <div class="log-actions" id="log-actions"></div>
+    </div>
+    <div class="log-body" id="log-body">
+      <div class="empty">Pick a source on the left — system logs, live streams, or stream history.</div>
+    </div>
+  </section>
+</div>
 <script src="/js/config.js"></script>
-<script>
-function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-fetch(API+'/api/sessions').then(r=>r.json()).then(sessions=>{
-  const all=[];
-  for(const s of sessions){
-    for(const c of (s.recent_cues||[])){
-      all.push({session:s.id,ts:c.ts,text:c.text});
-    }
-  }
-  all.sort((a,b)=>b.ts.localeCompare(a.ts));
-  const rows=all.slice(0,100).map(c=>
-    `<tr><td class="ts">${escH(c.ts)}</td><td class="ts">${escH(c.session)}</td><td>${escH(c.text)}</td></tr>`
-  ).join('');
-  document.getElementById('logs-tbody').innerHTML=rows||
-    '<tr><td colspan="3" class="stub">No captions yet this session.</td></tr>';
-}).catch(()=>{
-  document.getElementById('logs-tbody').innerHTML=
-    '<tr><td colspan="3" class="stub">Failed to load.</td></tr>';
-});
-</script>
+<script src="/js/logs.js"></script>
 </body>
 </html>

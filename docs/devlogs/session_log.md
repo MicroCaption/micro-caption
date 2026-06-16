@@ -14,6 +14,7 @@ the running index. **Add a new row here whenever you add a devlog.**
 | [5](DEVLOG_SESSION5_2026-06-15_22-30.md) | 2026-06-15 | Opus 4.8 | Caption readability/UX pass: end-of-stream handling, caption buffering for the caption-only viewer, fixed caption-log replay, fullscreen caption visibility, and standardized button styling site-wide. |
 | [6](DEVLOG_SESSION6_2026-06-15_23-23.md) | 2026-06-15 | Opus 4.8 | Built the Monitor page from a stub into a real performance-observability surface: GPU utilization readout plus real-time detail charts, ahead of GPU stress testing. (commit `5a8bfe4`) |
 | [7](DEVLOG_SESSION7_2026-06-16_01-55.md) | 2026-06-16 | Opus 4.8 | Diagnose-and-fix: GPU-utilization chart sawtoothing with a single stream. Explained the spike cause and smoothed the chart to report honest duty cycle (Option A). (commit `c420df8`) |
+| [8](DEVLOG_SESSION8_2026-06-16_18-00.md) | 2026-06-16 | Opus 4.8 | Re-prioritized for live captioning (accuracy→readability→sync). Got **Parakeet** running in-process on Python 3.14 (uv + CMake flag + torch cu128 + vendored real cuDNN 9.19) as primary with **Whisper hot-standby auto-failover/recovery**; Phase-1 broadcast-style video↔caption sync (delay + cache-then-reveal + timeline pacer, fixed an ~8 s caption-lag calibration bug); built the **Logs** page into a Heroic-style log manager with stream-history archiving. |
 
 ---
 
@@ -22,6 +23,7 @@ the running index. **Add a new row here whenever you add a devlog.**
 - **Sessions 2–3:** `YouTube-Ingest---ASR-Validation` (initially `update/youtube-asr-validation`)
 - **Session 4:** `feat/landing-page`
 - **Sessions 5–7:** `feat/make-captions-readable`
+- **Session 8:** `feat/the-forest`
 
 ## Conventions
 

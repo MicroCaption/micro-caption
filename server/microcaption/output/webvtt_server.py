@@ -25,6 +25,7 @@ import datetime
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
@@ -257,6 +258,38 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             cues = sess.writer.all_cue_data() if sess.writer else []
             self._send_json_raw(json.dumps(cues))
+
+        elif parts[:2] == ['api', 'session'] and len(parts) == 4 and parts[3] == 'sync':
+            # Calibration data for broadcast-style video↔caption sync (Phase 1).
+            if self._require_auth() is None: return
+            sess = _Handler._session_registry.get(parts[2])
+            if not sess:
+                self.send_error(404)
+                return
+            scfg = _Handler.config_snapshot.get('sync', {})
+            stream_now = sess.writer.current_time if sess.writer else 0.0
+            self._send_json({
+                # Wall-clock epoch of stream-clock t=0 (None until the adapter starts).
+                'join_epoch': getattr(sess.adapter, 'start_epoch', None) if sess.adapter else None,
+                'server_now': round(time.time(), 3),
+                # Newest produced caption time (stream-clock seconds) ≈ "live".
+                'stream_clock_now': round(stream_now, 3),
+                'target_delay': float(scfg.get('target_delay_sec', 20.0)),
+                'min_cache': float(scfg.get('min_cache_sec', 8.0)),
+                'offset_nudge': float(scfg.get('offset_nudge_sec', 0.0)),
+            })
+
+        elif parts == ['api', 'logs', 'sources']:
+            if self._require_auth() is None: return
+            self._send_json(self._logs_sources())
+
+        elif parts[:3] == ['api', 'logs', 'file'] and len(parts) == 4:
+            if self._require_auth() is None: return
+            self._send_log_file(parts[3])
+
+        elif parts[:3] == ['api', 'logs', 'session'] and len(parts) == 4:
+            if self._require_auth() is None: return
+            self._send_log_session(parts[3])
 
         elif parts[:1] == ['events'] and len(parts) == 2:
             if self._require_auth() is None: return
@@ -557,6 +590,77 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
 
+    # ── Logs page data sources ────────────────────────────────────────────────
+    # Whitelisted log files (id → (label, path relative to the server CWD)).
+    # Only these ids are ever read — the client never supplies a path.
+    _LOG_FILES = {
+        'server': ('Server log',        'logs/server.log'),
+        'client': ('Client log',        'logs/client.log'),
+        'cea608': ('CEA-608 packet log', 'logs/cea608.jsonl'),
+        'cea708': ('CEA-708 packet log', 'logs/cea708.jsonl'),
+    }
+
+    def _logs_sources(self) -> dict:
+        from . import session_archive
+        system = []
+        for fid, (label, path) in _Handler._LOG_FILES.items():
+            exists = os.path.exists(path)
+            system.append({'id': fid, 'label': label, 'kind': 'file',
+                           'exists': exists,
+                           'size': os.path.getsize(path) if exists else 0})
+        live = []
+        for s in list(self._session_registry.values()):
+            live.append({'id': s.id, 'code': getattr(s, 'code', ''),
+                         'status': s.status, 'url': s.url, 'video_id': s.video_id,
+                         'cue_count': s.writer.cue_count if s.writer else 0,
+                         'uptime': round(s.uptime, 1)})
+        live_ids = {s['id'] for s in live}
+        archive = [e for e in session_archive.read_index() if e.get('id') not in live_ids]
+        archive.sort(key=lambda e: e.get('created_at') or 0, reverse=True)
+        return {'system': system, 'live': live, 'archive': archive}
+
+    def _send_log_file(self, fid: str) -> None:
+        entry = _Handler._LOG_FILES.get(fid)
+        if not entry:
+            self.send_error(404)
+            return
+        qs = urllib.parse.parse_qs(self.path.split('?', 1)[1] if '?' in self.path else '')
+        try:
+            n = int(qs.get('tail', ['500'])[0])
+        except ValueError:
+            n = 500
+        self._send_text(_tail_file(entry[1], n))
+
+    def _send_log_session(self, sid: str) -> None:
+        from . import session_archive
+        # Live session → build history from the writer; else read the archive.
+        sess = self._session_registry.get(sid)
+        if sess and sess.writer:
+            cues = sess.writer.all_cue_data()
+            self._send_json({
+                'id': sess.id, 'live': True, 'status': sess.status,
+                'url': sess.url, 'video_id': sess.video_id,
+                'created_at': getattr(getattr(sess, 'adapter', None), 'start_epoch', None),
+                'cue_count': len(cues), 'accuracy': None,
+                'accuracy_summary': {}, 'records': [], 'cues': cues,
+            })
+            return
+        arc = session_archive.read_session(sid)
+        if arc is None:
+            self.send_error(404)
+            return
+        arc['live'] = False
+        self._send_json_raw(json.dumps(arc))
+
+    def _send_text(self, text: str, status: int = 200) -> None:
+        body = text.encode('utf-8', 'replace')
+        self.send_response(status)
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_json(self, data: dict, status: int = 200) -> None:
         self._send_json_raw(json.dumps(data), status)
 
@@ -568,6 +672,23 @@ class _Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+
+def _tail_file(path: str, n: int) -> str:
+    """Return the last n lines of a (possibly very large) text file cheaply."""
+    if not os.path.exists(path):
+        return ''
+    n = max(1, min(int(n), 5000))
+    size = os.path.getsize(path)
+    chunk = min(size, 1024 * 1024)   # read at most the trailing 1 MB
+    with open(path, 'rb') as f:
+        if size > chunk:
+            f.seek(size - chunk)
+        data = f.read()
+    lines = data.decode('utf-8', 'replace').splitlines()
+    if size > chunk and lines:
+        lines = lines[1:]   # drop the partial first line
+    return '\n'.join(lines[-n:])
 
 
 class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):

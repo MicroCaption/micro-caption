@@ -1,0 +1,4 @@
+# Vendored CUDA libs are large binaries fetched out-of-band (see fetch_cudnn.sh)
+cudnn/
+!fetch_cudnn.sh
+!.gitignore

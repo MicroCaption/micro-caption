@@ -22,30 +22,42 @@ io:
 
 # ── ASR engine ───────────────────────────────────────────────────────────────
 asr:
-  primary: whisper    # parakeet | whisper  (switch back to parakeet once nemo_toolkit is installed)
+  primary: parakeet   # parakeet | whisper  (parakeet primary, whisper hot-standby fallback)
+  preload_fallback: true   # load Whisper at startup too, so Parakeet→Whisper failover is instant
   chunk_duration: 2.0   # streaming loop: VAD silence window only (no longer the inference window)
   step_duration: 0.7    # seconds of new audio between inference steps (lower = faster commits, more GPU)
-  # Streaming (LocalAgreement-2) loop — active when the backend has word timestamps (Whisper):
+  # Streaming (LocalAgreement-2) loop — active when the backend has word timestamps:
   min_chunk_duration: 0.6    # min audio buffered before the first inference
   max_buffer_duration: 14.0  # hard cap; force-commit the tail if the buffer grows past this
   context_duration: 2.0      # seconds of committed audio kept as left-context after trimming
   # Accuracy-over-speed: hold the most recent N seconds back as look-ahead
   # context and re-review the tail before releasing it for display. Higher =
-  # more accurate but more delay. 0 disables (fastest, less accurate).
-  review_delay: 2.5
+  # more accurate but more delay. The broadcast-style sync delay (see `sync`)
+  # gives us a large budget, so we favour accuracy here. 0 disables.
+  review_delay: 4.0
   max_latency_ms: 2000  # warn if inference exceeds this
   vad_rms_threshold: 1.0e-4
   vad_hangover_frames: 2
   latency_window: 50    # rolling sample count for latency stats
 
   parakeet:
-    model: nvidia/parakeet-tdt_ctc-0.6b
+    model: nvidia/parakeet-tdt-0.6b-v2   # public TDT model w/ word timestamps (the _ctc-0.6b repo is gated)
     device: cuda
+    recovery_interval_sec: 8.0   # how often to retry reloading Parakeet after a failover
 
   whisper:
     model: large-v3-turbo   # swap to base.en for faster first-run download (~145 MB vs 1.6 GB)
     device: cuda
     compute_type: float16   # float16 | int8 | int8_float16
+
+# ── Broadcast-style sync (Phase 1) ─────────────────────────────────────────────
+# The viewer holds the video a fixed delay behind live so captions (which lag the
+# audio by review_delay + pacing) can be shown aligned to the video clock, and the
+# stream only reveals once a caption cache covers the delayed start point.
+sync:
+  target_delay_sec: 20.0   # how far behind live the video plays (15–30s = broadcast-style)
+  min_cache_sec: 8.0       # captions must cover this many seconds ahead before reveal
+  offset_nudge_sec: 0.0    # manual fine-tune of caption↔video alignment (+ = captions later)
 
 # ── Caption processing ────────────────────────────────────────────────────────
 caption:

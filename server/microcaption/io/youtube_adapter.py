@@ -77,6 +77,13 @@ class YouTubeAdapter(InputOutputManager):
         return _SAMPLE_RATE
 
     @property
+    def start_epoch(self) -> float:
+        """Wall-clock time (epoch seconds) of stream-clock t=0, i.e. when the
+        GStreamer pipeline started PLAYING. Caption start/end times are relative
+        to this, so the client uses it to align the (delayed) video clock."""
+        return self._start_time
+
+    @property
     def is_running(self) -> bool:
         return self._running
 

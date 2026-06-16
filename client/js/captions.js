@@ -1,15 +1,24 @@
-// captions.js — shared caption pagination + reading-paced display.
+// captions.js — shared caption pagination with two display modes.
 //
-// The server now emits an append-only stream of small committed fragments
-// (a few words each, via LocalAgreement-2). This module stitches those
-// fragments into ≤2-line blocks and releases them at a comfortable reading
-// pace, holding each block on screen long enough to actually read — while
-// never falling more than ~MAX_LAG seconds behind live (it shortens dwell and,
-// when badly backed up, skips ahead).
+// The server emits an append-only stream of small committed fragments (a few
+// words each, via LocalAgreement-2). This module stitches those fragments into
+// ≤2-line blocks. Each block is then displayed in one of two modes:
+//
+//   • LIVE mode (default) — reading-paced: release each block for a comfortable
+//     reading dwell, never falling more than ~maxLagSec behind live (shortens
+//     dwell, then drops backlog). Used by the caption-only viewer (watch.js),
+//     which has no video clock to sync to.
+//
+//   • SCHEDULED mode (opt.scheduled) — timeline-driven: each block is tagged
+//     with its stream-time onset and shown when the (delayed) video playhead
+//     reaches it, via tick(streamTime). Used by the synced player (player.js),
+//     where the video is held behind live so captions can be laid out at an
+//     ideal pace AND stay aligned to the picture. No catch-up dropping — the
+//     delay buffer gives us all the slack we need.
 //
 // Exposes two globals (loaded as a classic script, before player.js/watch.js):
 //   wrapLines(text, maxChars, maxLines) → string[]   (line-wrap helper)
-//   CaptionPacer                                       (the paced display queue)
+//   CaptionPacer                                       (the paged display queue)
 
 (function (global) {
   'use strict';
@@ -20,13 +29,14 @@
     readingCps: 14,      // reading speed ≈ 168 wpm (≈5 chars/word)
     minDwell: 1200,      // ms — floor so nothing flashes by
     maxDwell: 4000,      // ms — ceiling so the screen doesn't stall
-    // maxLagSec is the main "closeness to live" knob: the pacer speeds up
-    // (shortens dwell, then drops backlog) whenever it falls this far behind.
-    // Lower = closer to live but text turns over faster; higher = calmer reading.
-    maxLagSec: 2.0,      // target lag behind live
+    // maxLagSec is the main "closeness to live" knob for LIVE mode: the pacer
+    // speeds up (shortens dwell, then drops backlog) whenever it falls this far
+    // behind. Lower = closer to live but text turns over faster.
+    maxLagSec: 2.0,
     flushGapMs: 500,     // flush a partial block after this much silence
     idleClearMs: 6000,   // clear the screen after this long with nothing new
-    maxBacklog: 3,       // queued blocks beyond this get dropped to catch up
+    maxBacklog: 3,       // LIVE mode: queued blocks beyond this get dropped
+    scheduled: false,    // SCHEDULED mode: display by tick(streamTime), not paced
   };
 
   // Wrap text into lines of ≤ maxChars, keeping the last maxLines lines.
@@ -59,8 +69,11 @@
     this.opt = Object.assign({}, DEFAULTS, opts || {});
 
     this._cur = [];          // words accumulating into the current block
-    this._queue = [];        // ready blocks awaiting display (FIFO)
+    this._curStart = 0;      // stream-time onset of the current block's first word
+    this._queue = [];        // LIVE: ready blocks awaiting display (FIFO)
+    this._blocks = [];       // SCHEDULED: all sealed blocks, sorted by startTime
     this._showing = null;    // block currently on screen
+    this._shownStart = null; // SCHEDULED: startTime of the block on screen
     this._latestEnd = 0;     // newest fragment end time (stream seconds) ≈ "live"
     this._paused = false;
 
@@ -75,15 +88,18 @@
     if (typeof end === 'number' && !isNaN(end)) {
       this._latestEnd = Math.max(this._latestEnd, end);
     }
+    const startT = (typeof start === 'number' && !isNaN(start)) ? start : this._latestEnd;
     if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
 
     const words = clean.split(' ');
     for (const w of words) {
+      if (!this._cur.length) this._curStart = startT;   // onset of a fresh block
       const tentative = this._cur.concat(w);
       if (wrapLines(tentative.join(' '), this.opt.maxChars, 0).length > this.opt.maxLines) {
         // Adding this word would overflow 2 lines — seal the current block.
         this._seal();
         this._cur = [w];
+        this._curStart = startT;
       } else {
         this._cur = tentative;
         // Break on sentence boundaries (once the block has some substance).
@@ -103,16 +119,49 @@
   CaptionPacer.prototype._seal = function () {
     if (!this._cur.length) return;
     const text = this._cur.join(' ');
-    this._queue.push({
+    const block = {
       lines: wrapLines(text, this.opt.maxChars, this.opt.maxLines),
       chars: text.length,
+      startTime: this._curStart,
       endTime: this._latestEnd,
-    });
+    };
+    if (this.opt.scheduled) {
+      this._blocks.push(block);     // displayed by tick(), kept in arrival (≈time) order
+    } else {
+      this._queue.push(block);
+    }
     this._cur = [];
   };
 
+  // ── SCHEDULED mode ─────────────────────────────────────────────────────────
+  // Drive from the (delayed) video clock: show the most recent block whose
+  // onset has been reached. Called ~4×/s by the player.
+  CaptionPacer.prototype.tick = function (streamTime) {
+    if (this._paused || typeof streamTime !== 'number' || isNaN(streamTime)) return;
+    // Newest block whose onset is at or before the current playhead.
+    let pick = null;
+    for (let i = this._blocks.length - 1; i >= 0; i--) {
+      if (this._blocks[i].startTime <= streamTime) { pick = this._blocks[i]; break; }
+    }
+    if (!pick) { if (this._shownStart !== null) { this._shownStart = null; this.render([]); } return; }
+    if (pick.startTime === this._shownStart) return;       // already showing it
+    // Don't keep a stale block up forever once speech has long passed.
+    if (streamTime - pick.endTime > this.opt.idleClearMs / 1000) {
+      if (this._shownStart !== null) { this._shownStart = null; this.render([]); }
+      return;
+    }
+    this._shownStart = pick.startTime;
+    this.render(pick.lines);
+    // Bound memory: drop blocks well behind the playhead.
+    if (this._blocks.length > 240) {
+      this._blocks = this._blocks.filter(b => b.endTime > streamTime - 60);
+    }
+  };
+
+  // ── LIVE mode ──────────────────────────────────────────────────────────────
   // Show the next block if nothing is currently displaying.
   CaptionPacer.prototype._kick = function () {
+    if (this.opt.scheduled) return;   // SCHEDULED mode advances via tick()
     if (this._paused || this._showing || !this._queue.length) return;
     this._advance();
   };
@@ -161,6 +210,7 @@
   CaptionPacer.prototype.resume = function () {
     if (!this._paused) return;
     this._paused = false;
+    if (this.opt.scheduled) return;   // tick() resumes naturally on next call
     if (this._showing) {
       // A block was frozen mid-dwell (pause cleared its advance timer) —
       // restart advancement so we don't get stuck on it.
@@ -179,7 +229,9 @@
     this._advanceTimer = this._flushTimer = this._idleTimer = null;
     this._cur = [];
     this._queue = [];
+    this._blocks = [];
     this._showing = null;
+    this._shownStart = null;
     this.render([]);
   };
 

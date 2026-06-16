@@ -115,58 +115,164 @@ class HypothesisBuffer:
 
 class SharedASRBackend:
     """
-    Thread-safe model wrapper loaded once and shared across per-session
-    ASRPipeline instances.  A single threading.Lock serialises GPU access
-    so multiple sessions can't race into the same inference call.
+    Supervised dual-backend, loaded once and shared across per-session
+    ASRPipeline instances. A single threading.Lock serialises GPU access so
+    sessions can't race into the same inference call.
+
+    Parakeet is the primary engine; Whisper is a hot standby (preloaded by
+    default). If Parakeet raises, the call transparently fails over to Whisper
+    — the SAME call is retried so no caption is dropped — and a background
+    thread keeps trying to reload Parakeet, switching back as soon as it
+    recovers. Inference calls NEVER raise (they return safe-empty on a double
+    failure) so the ASR worker thread can't die mid-stream.
+
+    Both backends expose word timestamps, so ``supports_words`` is always True
+    and the pipeline stays in streaming mode across a failover.
     """
 
     def __init__(self, config: dict) -> None:
         self._config = config
-        self._lock = threading.Lock()
-        self._backend = None
+        self._lock = threading.Lock()          # serialises GPU access
+        self._state_lock = threading.Lock()    # guards _active pointer + flags
+        self._primary_is_parakeet = config.get('primary', 'parakeet') == 'parakeet'
+        self._preload_fallback = bool(config.get('preload_fallback', True))
+        self._recovery_interval = float(
+            config.get('parakeet', {}).get('recovery_interval_sec', 8.0))
+        self._parakeet = None
+        self._whisper = None
+        self._active = None
+        self._recovering = False
+        self._running = True
         self.name = 'unloaded'
 
+    # ── loading ──────────────────────────────────────────────────────────────
+
     def load(self) -> None:
-        primary_name = self._config.get('primary', 'parakeet')
-        if primary_name == 'parakeet':
+        # Preload Whisper so failover is instant (and it's the engine when
+        # primary == whisper). Skipping the preload only delays the first
+        # failover by one model load.
+        if self._preload_fallback or not self._primary_is_parakeet:
+            self._whisper = self._load_whisper()
+
+        if self._primary_is_parakeet:
             try:
-                from .parakeet_backend import ParakeetBackend
-                b = ParakeetBackend(self._config.get('parakeet', {}))
-                b.load()
-                self._backend = b
-                self.name = b.name
-                return
+                self._parakeet = self._load_parakeet()
+                self._active = self._parakeet
             except Exception as exc:
-                print(f'[ASR] Parakeet failed ({exc}), falling back to Whisper')
+                print(f'[ASR] Parakeet failed to load ({exc}); using Whisper, will keep retrying')
+                if self._whisper is None:
+                    self._whisper = self._load_whisper()
+                self._active = self._whisper
+                self._start_recovery()
+        else:
+            self._active = self._whisper
+        self.name = self._active.name
+
+    def _load_parakeet(self):
+        from .parakeet_backend import ParakeetBackend
+        b = ParakeetBackend(self._config.get('parakeet', {}))
+        b.load()
+        return b
+
+    def _load_whisper(self):
         from .whisper_backend import WhisperBackend
         b = WhisperBackend(self._config.get('whisper', {}))
         b.load()
-        self._backend = b
-        self.name = b.name
+        return b
+
+    # ── public inference API ───────────────────────────────────────────────--
 
     @property
     def supports_words(self) -> bool:
-        return bool(getattr(self._backend, 'supports_words', False))
+        # Both backends support words; keep True so the pipeline never has to
+        # switch inference mode when failing over.
+        return True
+
+    @property
+    def active_name(self) -> str:
+        a = self._active
+        return getattr(a, 'name', 'unloaded')
 
     def transcribe(self, samples: np.ndarray) -> str:
-        with self._lock:
-            if self._backend is None:
-                raise RuntimeError('SharedASRBackend not loaded')
-            return self._backend.transcribe(samples)
+        return self._call('transcribe', samples, '')
 
     def transcribe_words(self, samples: np.ndarray) -> list:
         """Word-level transcription, serialised through the shared GPU lock."""
-        with self._lock:
-            if self._backend is None:
-                raise RuntimeError('SharedASRBackend not loaded')
-            return self._backend.transcribe_words(samples)
+        return self._call('transcribe_words', samples, [])
+
+    def _call(self, method: str, samples: np.ndarray, empty):
+        backend = self._active
+        if backend is None:
+            raise RuntimeError('SharedASRBackend not loaded')
+        try:
+            with self._lock:
+                return getattr(backend, method)(samples)
+        except Exception as exc:
+            if backend is self._parakeet:
+                # Primary failed — fail over to Whisper and retry this call so
+                # the caption isn't lost, then start trying to recover Parakeet.
+                print(f'[ASR] Parakeet error ({exc}); failing over to Whisper')
+                self._failover()
+                wb = self._whisper
+                if wb is not None:
+                    try:
+                        with self._lock:
+                            return getattr(wb, method)(samples)
+                    except Exception as exc2:
+                        print(f'[ASR] Whisper fallback error: {exc2}')
+                return empty
+            # Active is Whisper (or unknown) — don't crash the worker thread.
+            print(f'[ASR] {getattr(backend, "name", "?")} error: {exc}')
+            return empty
+
+    # ── failover + recovery ──────────────────────────────────────────────────
+
+    def _failover(self) -> None:
+        with self._state_lock:
+            if self._whisper is None:
+                self._whisper = self._load_whisper()   # lazy (preload was off)
+            self._active = self._whisper
+            self.name = self._whisper.name
+        self._start_recovery()
+
+    def _start_recovery(self) -> None:
+        with self._state_lock:
+            if self._recovering:
+                return
+            self._recovering = True
+        threading.Thread(target=self._recovery_loop, daemon=True,
+                         name='asr-parakeet-recovery').start()
+
+    def _recovery_loop(self) -> None:
+        # Reload Parakeet out-of-band and switch back as soon as a smoke-test
+        # inference succeeds. Loading happens outside the GPU lock (it's heavy);
+        # only the smoke test holds the lock briefly.
+        while self._running:
+            time.sleep(self._recovery_interval)
+            if not self._running:
+                break
+            try:
+                fresh = self._load_parakeet()
+                with self._lock:
+                    fresh.transcribe_words(np.zeros(_SAMPLE_RATE // 2, dtype=np.float32))
+            except Exception as exc:
+                print(f'[ASR] Parakeet recovery attempt failed ({exc}); will retry')
+                continue
+            with self._state_lock:
+                self._parakeet = fresh
+                self._active = fresh
+                self.name = fresh.name
+                self._recovering = False
+            print('[ASR] Parakeet recovered — switched back from Whisper')
+            return
 
     def unload(self) -> None:
+        self._running = False
         with self._lock:
-            if self._backend is not None:
-                if hasattr(self._backend, 'unload'):
-                    self._backend.unload()
-                self._backend = None
+            for b in (self._parakeet, self._whisper):
+                if b is not None and hasattr(b, 'unload'):
+                    b.unload()
+            self._parakeet = self._whisper = self._active = None
         self.name = 'unloaded'
 
 

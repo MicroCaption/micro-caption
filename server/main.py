@@ -301,6 +301,11 @@ def main() -> None:
         if sess is None:
             return
         print(f'[Session] Stopping {session_id}')
+        if sess.status not in ('ended', 'error'):
+            sess.status = 'ended'
+        # Persist captioning history so it stays viewable on the Logs page.
+        from microcaption.output import session_archive
+        session_archive.write_session(sess)
         if webvtt_server:
             webvtt_server.unregister_session(session_id)
         if sess.adapter:

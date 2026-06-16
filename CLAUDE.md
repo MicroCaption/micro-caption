@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Running
 
-Always use `./server/run.sh` to start the caption server — not `python3 main.py` directly. `run.sh` sets the CUDA library path required for Whisper inference:
+Always use `./server/run.sh` to start the caption server — not `python3 main.py` directly. `run.sh` sets the CUDA library path required for Parakeet (cuDNN) and Whisper (cuBLAS) inference:
 
     ./server/run.sh                        # idle server, submit URLs via web UI
     ./server/run.sh --youtube "<URL>"      # start and immediately caption a URL
@@ -25,6 +25,16 @@ No GPU, models, or network required. Run from `server/`:
     .venv/bin/python3 -m pytest tests/test_packetizer.py -v   # just CEA-608/708 tests
 
 The venv must be created with `--system-site-packages` so GStreamer's `python3-gi` apt bindings (installed via apt, not pip) are visible. Config lives in `server/config/settings.yaml`; any nested key can be overridden via `MC_*` env vars (e.g., `MC_ASR_PRIMARY=whisper`).
+
+### ASR Environment (torch / NeMo / cuDNN on Python 3.14)
+
+The venv is Python 3.14. torch + NeMo (for Parakeet) DO install here, but with caveats — capture them or a fresh setup will fail:
+
+- **Install with `uv`, not plain pip.** pip's resolver hits `resolution-too-deep` on NeMo's dependency tree; `uv pip install torch "nemo_toolkit[asr]"` resolves a clean wheel set (NeMo 2.7.3, onnx 1.22 abi3, numpy stays 2.x).
+- **Set `CMAKE_POLICY_VERSION_MINIMUM=3.5`** during install — a few small C++ deps (e.g. `kaldialign`) have no cp314 wheel and fail to build against this box's CMake 4.2 without it.
+- **torch must be the `cu128` build** (`pip install "torch==2.11.0+cu128" --index-url https://download.pytorch.org/whl/cu128`). The RTX 5070 Ti is Blackwell (sm_120); `cu126` lacks sm_120 kernels. `cu130` would also work but its cuDNN wheel is a stub.
+- **cuDNN is vendored out-of-band.** torch cu128 needs cuDNN 9.19, but NVIDIA's PyPI cuDNN wheel for it has no `.so` (stub). Run `server/vendor/fetch_cudnn.sh` once to download the real libs into `server/vendor/cudnn/lib`; `run.sh` puts that dir first on `LD_LIBRARY_PATH`.
+- **Parakeet model:** use `nvidia/parakeet-tdt-0.6b-v2` (public). `nvidia/parakeet-tdt_ctc-0.6b` is gated (HF 401).
 
 ## Architecture
 
@@ -69,7 +79,7 @@ Google OAuth2 is disabled by default (`auth.enabled: false`). When disabled, all
 
 ### Operational Notes
 
-- `run.sh` hardcodes `LD_LIBRARY_PATH` for `/usr/local/lib/ollama/cuda_v12` (libcublas needed by ctranslate2/faster-whisper)
-- `asr.primary` is currently `whisper`; Parakeet is the intended primary but `nemo_toolkit[asr]` has not installed due to Python 3.14 wheel gaps
+- `run.sh` sets `LD_LIBRARY_PATH` to `server/vendor/cudnn/lib` (real cuDNN 9.19 for Parakeet/torch — see ASR Environment below) then `/usr/local/lib/ollama/cuda_v12` (libcublas needed by ctranslate2/faster-whisper)
+- `asr.primary` is `parakeet` (`nvidia/parakeet-tdt-0.6b-v2`, in-process via NeMo); Whisper (`faster-whisper`) is the hot-standby fallback. Both run in the same process and share the GPU.
 - yt-dlp format selector: `-f bestaudio/best` (falls back to HLS when audio-only requires a JS runtime; Node.js must be installed for YouTube audio-only formats)
 - Whisper hallucinations suppressed via `condition_on_previous_text=False` + `no_speech_prob` gate + blocklist in `server/microcaption/asr/whisper_backend.py`

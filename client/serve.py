@@ -11,7 +11,32 @@ import sys
 
 PORT = int(os.environ.get('PORT', 3000))
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+_CLIENT_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(_CLIENT_DIR)
+
+
+class _Tee:
+    """Mirror output to the console and to server/logs/client.log so the Logs
+    page (served by the API on :8765) can show client-server request logs."""
+    def __init__(self, stream, path):
+        self._stream = stream
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self._f = open(path, 'a', buffering=1)
+
+    def write(self, s):
+        self._stream.write(s)
+        try:
+            self._f.write(s)
+        except Exception:
+            pass
+
+    def flush(self):
+        self._stream.flush()
+
+
+_LOG_PATH = os.path.join(_CLIENT_DIR, '..', 'server', 'logs', 'client.log')
+sys.stdout = _Tee(sys.stdout, _LOG_PATH)
+sys.stderr = _Tee(sys.stderr, _LOG_PATH)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
