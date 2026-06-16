@@ -25,6 +25,7 @@ import datetime
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
@@ -168,6 +169,7 @@ class _Handler(BaseHTTPRequestHandler):
     start_callback: Optional[Callable[[str], str]] = None
     stop_callback: Optional[Callable[[str], None]] = None
     metrics_provider: Optional[Callable[[], Dict]] = None
+    gpu_provider: Optional[Callable[[], Dict]] = None
     config_snapshot: Dict = {}
 
     def log_message(self, fmt, *args):
@@ -229,6 +231,10 @@ class _Handler(BaseHTTPRequestHandler):
             if self._require_auth() is None: return
             self._send_json_raw(self._build_metrics_json())
 
+        elif path == '/api/sdi/devices':
+            if self._require_auth() is None: return
+            self._send_json(self._sdi_devices())
+
         elif path == '/api/config':
             if self._require_auth() is None: return
             self._send_json_raw(json.dumps(_Handler.config_snapshot, indent=2))
@@ -256,6 +262,38 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             cues = sess.writer.all_cue_data() if sess.writer else []
             self._send_json_raw(json.dumps(cues))
+
+        elif parts[:2] == ['api', 'session'] and len(parts) == 4 and parts[3] == 'sync':
+            # Calibration data for broadcast-style video↔caption sync (Phase 1).
+            if self._require_auth() is None: return
+            sess = _Handler._session_registry.get(parts[2])
+            if not sess:
+                self.send_error(404)
+                return
+            scfg = _Handler.config_snapshot.get('sync', {})
+            stream_now = sess.writer.current_time if sess.writer else 0.0
+            self._send_json({
+                # Wall-clock epoch of stream-clock t=0 (None until the adapter starts).
+                'join_epoch': getattr(sess.adapter, 'start_epoch', None) if sess.adapter else None,
+                'server_now': round(time.time(), 3),
+                # Newest produced caption time (stream-clock seconds) ≈ "live".
+                'stream_clock_now': round(stream_now, 3),
+                'target_delay': float(scfg.get('target_delay_sec', 20.0)),
+                'min_cache': float(scfg.get('min_cache_sec', 8.0)),
+                'offset_nudge': float(scfg.get('offset_nudge_sec', 0.0)),
+            })
+
+        elif parts == ['api', 'logs', 'sources']:
+            if self._require_auth() is None: return
+            self._send_json(self._logs_sources())
+
+        elif parts[:3] == ['api', 'logs', 'file'] and len(parts) == 4:
+            if self._require_auth() is None: return
+            self._send_log_file(parts[3])
+
+        elif parts[:3] == ['api', 'logs', 'session'] and len(parts) == 4:
+            if self._require_auth() is None: return
+            self._send_log_session(parts[3])
 
         elif parts[:1] == ['events'] and len(parts) == 2:
             if self._require_auth() is None: return
@@ -316,7 +354,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._send_json({
             'session_id': session_id,
-            'player_url': f'/player.html?id={session_id}',
+            'player_url': f'/player?id={session_id}',
         })
 
     def _post_stop(self, session_id: str) -> None:
@@ -379,10 +417,18 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        gpu: Dict = {'available': False}
+        if _Handler.gpu_provider:
+            try:
+                gpu = _Handler.gpu_provider()
+            except Exception:
+                pass
+
         sessions = list(self._session_registry.values())
         payload = {
             'session_count': len(sessions),
             'asr': asr,
+            'gpu': gpu,
             'captions': {
                 'total_cues': sum(
                     s.writer.cue_count for s in sessions if s.writer
@@ -406,11 +452,15 @@ class _Handler(BaseHTTPRequestHandler):
         if sess.writer:
             last = sess.writer.last_cue_data()
             if last:
+                # Stitch recent fragments into a short tail so a late joiner
+                # lands on ~2 readable lines instead of a 2-word fragment.
+                tail = sess.writer.tail_text() or last['text']
                 catchup = json.dumps({
-                    'text':  last['text'],
-                    'lines': [l for l in last['text'].split('\n') if l.strip()],
+                    'text':  tail,
+                    'lines': [l for l in tail.split('\n') if l.strip()],
                     'start': f"{last['start']:.3f}",
                     'end':   f"{last['end']:.3f}",
+                    'catchup': True,
                 })
                 try:
                     self.wfile.write(f'event: cue\ndata: {catchup}\n\n'.encode())
@@ -472,7 +522,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_login(self) -> None:
         if _Handler._auth is None:
             self.send_response(302)
-            self.send_header('Location', '/dashboard.html')
+            self.send_header('Location', '/dashboard')
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
@@ -519,7 +569,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         self.send_response(302)
-        self.send_header('Location', '/dashboard.html')
+        self.send_header('Location', '/dashboard')
         self._send_cookie('mc_state', '', 0)
         self._send_cookie(
             _Handler._auth.cookie_name,
@@ -544,6 +594,107 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
 
+    # ── Logs page data sources ────────────────────────────────────────────────
+    # Whitelisted log files (id → (label, path relative to the server CWD)).
+    # Only these ids are ever read — the client never supplies a path.
+    _LOG_FILES = {
+        'server': ('Server log',        'logs/server.log'),
+        'client': ('Client log',        'logs/client.log'),
+        'cea608': ('CEA-608 packet log', 'logs/cea608.jsonl'),
+        'cea708': ('CEA-708 packet log', 'logs/cea708.jsonl'),
+    }
+
+    def _logs_sources(self) -> dict:
+        from . import session_archive
+        system = []
+        for fid, (label, path) in _Handler._LOG_FILES.items():
+            exists = os.path.exists(path)
+            system.append({'id': fid, 'label': label, 'kind': 'file',
+                           'exists': exists,
+                           'size': os.path.getsize(path) if exists else 0})
+        live = []
+        for s in list(self._session_registry.values()):
+            live.append({'id': s.id, 'code': getattr(s, 'code', ''),
+                         'status': s.status, 'url': s.url, 'video_id': s.video_id,
+                         'cue_count': s.writer.cue_count if s.writer else 0,
+                         'uptime': round(s.uptime, 1)})
+        live_ids = {s['id'] for s in live}
+        archive = [e for e in session_archive.read_index() if e.get('id') not in live_ids]
+        archive.sort(key=lambda e: e.get('created_at') or 0, reverse=True)
+        return {'system': system, 'live': live, 'archive': archive}
+
+    def _sdi_devices(self) -> dict:
+        """DeckLink SDI sub-devices + live signal lock for the dashboard picker.
+        Empty list until the Blackmagic Desktop Video driver is installed."""
+        from ..io import decklink_devices
+        devices = decklink_devices.list_devices()
+        # Which sub-devices are currently owned by a live SDI session.
+        in_use = {}
+        for s in list(self._session_registry.values()):
+            if getattr(s, 'source_type', '') == 'sdi' and s.status in ('starting', 'live'):
+                try:
+                    in_use[int(s.url.split('://', 1)[1])] = s.id
+                except (ValueError, IndexError):
+                    pass
+        for d in devices:
+            owner = in_use.get(d['index'])
+            d['session_id'] = owner
+            if not d.get('can_input'):
+                continue
+            if owner:
+                # A live session already holds this sub-device — opening it a
+                # second time to probe would contend with the capture. The
+                # session is running, so by definition it's locked.
+                d['signal_locked'] = True
+                d['mode'] = ''
+            else:
+                st = decklink_devices.device_status(d['index'])
+                d['signal_locked'] = st.get('signal_locked')
+                d['mode'] = st.get('mode', '')
+        return {'devices': devices}
+
+    def _send_log_file(self, fid: str) -> None:
+        entry = _Handler._LOG_FILES.get(fid)
+        if not entry:
+            self.send_error(404)
+            return
+        qs = urllib.parse.parse_qs(self.path.split('?', 1)[1] if '?' in self.path else '')
+        try:
+            n = int(qs.get('tail', ['500'])[0])
+        except ValueError:
+            n = 500
+        self._send_text(_tail_file(entry[1], n))
+
+    def _send_log_session(self, sid: str) -> None:
+        from . import session_archive
+        # Live session → build history from the writer; else read the archive.
+        sess = self._session_registry.get(sid)
+        if sess and sess.writer:
+            cues = sess.writer.all_cue_data()
+            self._send_json({
+                'id': sess.id, 'live': True, 'status': sess.status,
+                'url': sess.url, 'video_id': sess.video_id,
+                'created_at': getattr(getattr(sess, 'adapter', None), 'start_epoch', None),
+                'cue_count': len(cues), 'accuracy': None,
+                'accuracy_summary': {}, 'records': [], 'cues': cues,
+            })
+            return
+        arc = session_archive.read_session(sid)
+        if arc is None:
+            self.send_error(404)
+            return
+        arc['live'] = False
+        self._send_json_raw(json.dumps(arc))
+
+    def _send_text(self, text: str, status: int = 200) -> None:
+        body = text.encode('utf-8', 'replace')
+        self.send_response(status)
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_json(self, data: dict, status: int = 200) -> None:
         self._send_json_raw(json.dumps(data), status)
 
@@ -555,6 +706,23 @@ class _Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+
+def _tail_file(path: str, n: int) -> str:
+    """Return the last n lines of a (possibly very large) text file cheaply."""
+    if not os.path.exists(path):
+        return ''
+    n = max(1, min(int(n), 5000))
+    size = os.path.getsize(path)
+    chunk = min(size, 1024 * 1024)   # read at most the trailing 1 MB
+    with open(path, 'rb') as f:
+        if size > chunk:
+            f.seek(size - chunk)
+        data = f.read()
+    lines = data.decode('utf-8', 'replace').splitlines()
+    if size > chunk and lines:
+        lines = lines[1:]   # drop the partial first line
+    return '\n'.join(lines[-n:])
 
 
 class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -581,6 +749,7 @@ class WebVTTServer:
                  start_callback: Optional[Callable[[str], str]] = None,
                  stop_callback: Optional[Callable[[str], None]] = None,
                  metrics_provider: Optional[Callable[[], Dict]] = None,
+                 gpu_provider: Optional[Callable[[], Dict]] = None,
                  config_snapshot: Optional[Dict] = None) -> None:
         self._host: str = config.get('host', '0.0.0.0')
         self._port: int = config.get('port', 8765)
@@ -600,6 +769,7 @@ class WebVTTServer:
         _Handler.start_callback = start_callback
         _Handler.stop_callback = stop_callback
         _Handler.metrics_provider = metrics_provider
+        _Handler.gpu_provider = gpu_provider
         _Handler.config_snapshot = config_snapshot or {}
 
     def register_session(self, session) -> None:

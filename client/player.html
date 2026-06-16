@@ -3,26 +3,43 @@
 <head>
   <meta charset="utf-8">
   <title>MicroCaption &mdash; Live</title>
+  <link rel="stylesheet" href="/css/shared.css">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0d0d0d; color: #ddd; font-family: monospace; min-height: 100vh; padding: 14px; }
+    /* Player-specific layout only — buttons & base styles come from shared.css. */
+    body { padding: 14px; }
     #topbar {
       display: flex; align-items: center; justify-content: space-between;
-      margin-bottom: 12px; font-size: 0.78em;
+      margin-bottom: 14px;
     }
-    #topbar h1 { color: #555; letter-spacing: 0.12em; text-transform: uppercase; font-size: 1em; }
-    #topbar a { color: #555; text-decoration: none; border: 1px solid #2a2a2a; padding: 5px 12px; border-radius: 4px; }
-    #topbar a:hover { color: #aaa; border-color: #444; }
-    #stop-btn, #jump-live-btn { background: none; border: 1px solid #5a2020; color: #844; font-family: monospace; font-size: 1em; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
-    #stop-btn:hover, #jump-live-btn:hover { border-color: #a44; color: #c66; }
-    #jump-live-btn { border-color: #2a5a2a; color: #484; }
-    #jump-live-btn:hover { border-color: #4a8a4a; color: #6a6; }
+    #topbar h1 { color: #555; letter-spacing: 0.12em; text-transform: uppercase; font-size: 0.8em; }
+    #topbar-actions { display: flex; align-items: center; gap: 8px; }
+    /* So the dynamically-swapped mode button is a direct flex item and lines up. */
+    #mode-btn-wrap { display: contents; }
     #player-wrap {
       position: relative; width: 100%; max-width: 1280px; margin: 0 auto;
       background: #000; border-radius: 6px; overflow: hidden;
       box-shadow: 0 4px 32px rgba(0,0,0,.7);
     }
     #player-wrap iframe { display: block; width: 100%; aspect-ratio: 16/9; border: none; }
+    /* Fullscreen: wrapper fills the screen so the caption overlay rides along. */
+    #player-wrap:fullscreen { width: 100vw; max-width: none; border-radius: 0;
+      display: flex; align-items: center; justify-content: center; }
+    #player-wrap:fullscreen iframe { width: 100vw; height: 100vh; aspect-ratio: auto; }
+    #player-wrap:fullscreen #caption-bar { padding-bottom: 36px; }
+    #player-wrap:fullscreen .caption-line { font-size: 2em; }
+    /* On-video fullscreen button: revealed on hover, bottom-right where the
+       native YouTube fullscreen button used to be. */
+    #fs-overlay-btn {
+      position: absolute; bottom: 8px; right: 8px; z-index: 6;
+      width: 38px; height: 38px; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,.35); border: none; border-radius: 4px;
+      color: #fff; font-size: 1.25em; cursor: pointer;
+      opacity: 0; transition: opacity .18s; text-shadow: 0 1px 2px #000;
+    }
+    #player-wrap:hover #fs-overlay-btn,
+    #player-wrap:focus-within #fs-overlay-btn { opacity: .9; }
+    #fs-overlay-btn:hover { opacity: 1; background: rgba(0,0,0,.55); }
     #caption-bar {
       position: absolute; bottom: 0; left: 0; right: 0;
       padding: 14px 18px 20px;
@@ -53,15 +70,20 @@
 <body>
   <div id="topbar">
     <h1>MicroCaption &mdash; Live ASR</h1>
-    <div style="display:flex;gap:8px" id="topbar-actions">
-      <a href="/dashboard.html">&larr; Control room</a>
+    <div id="topbar-actions">
+      <a href="/dashboard" class="btn-neutral">&larr; Control room</a>
       <span id="mode-btn-wrap"></span>
-      <button id="stop-btn" onclick="stopSession()">&#9632; Stop</button>
+      <button id="fs-btn" class="btn-neutral" onclick="toggleFullscreen()">&#9974; Fullscreen</button>
+      <button id="stop-btn" class="btn-danger" onclick="stopSession()">&#9632; Stop</button>
     </div>
   </div>
   <div id="player-wrap">
     <div id="player-container"></div>
     <div id="caption-bar"></div>
+    <!-- On-video fullscreen control. YouTube's native one is disabled (fs=0)
+         because it would hide the caption overlay; this sits in the same spot
+         and fullscreens the whole wrapper so captions stay visible. -->
+    <button id="fs-overlay-btn" onclick="toggleFullscreen()" title="Fullscreen" aria-label="Fullscreen">&#9974;</button>
   </div>
   <div id="footer">
     <span id="status" class="waiting">Connecting&hellip;</span>
@@ -76,7 +98,7 @@
     const MODE = _params.get('mode') || 'live';
 
     if (!SESSION_ID) {
-      document.body.innerHTML = '<p style="color:#555;padding:40px;font-family:monospace">No session ID — <a href="/dashboard.html" style="color:#3a9a4a">back to dashboard</a></p>';
+      document.body.innerHTML = '<p style="color:#555;padding:40px;font-family:monospace">No session ID — <a href="/dashboard" style="color:#3a9a4a">back to dashboard</a></p>';
     }
 
     document.getElementById('webvtt-link').innerHTML =
@@ -85,10 +107,26 @@
     // Set up mode button
     const modeBtnWrap = document.getElementById('mode-btn-wrap');
     if (MODE === 'replay') {
-      modeBtnWrap.innerHTML = `<button id="jump-live-btn" onclick="jumpToLive()">&#9197;&nbsp;Jump to live</button>`;
+      modeBtnWrap.innerHTML = `<button id="jump-live-btn" class="btn-watch" onclick="jumpToLive()">&#9197; Jump to live</button>`;
     } else {
-      modeBtnWrap.innerHTML = `<a href="/player.html?id=${SESSION_ID}&mode=replay">&#9198;&nbsp;From beginning</a>`;
+      modeBtnWrap.innerHTML = `<a href="/player?id=${SESSION_ID}&mode=replay" class="btn-watch">&#9198; From beginning</a>`;
     }
+
+    // Fullscreen the whole wrapper (iframe + caption overlay) rather than the
+    // bare iframe, so captions stay visible in fullscreen.
+    function toggleFullscreen() {
+      const el = document.getElementById('player-wrap');
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else if (el.requestFullscreen) {
+        el.requestFullscreen().catch(() => {});
+      }
+    }
+    document.addEventListener('fullscreenchange', () => {
+      const btn = document.getElementById('fs-btn');
+      if (btn) btn.innerHTML = document.fullscreenElement
+        ? '&#9974;&nbsp;Exit' : '&#9974;&nbsp;Fullscreen';
+    });
 
     // Build player iframe (resolved after fetching session info)
     async function buildPlayer() {
@@ -102,11 +140,13 @@
           return;
         }
         if (sess.source_type === 'youtube' && sess.video_id) {
+          // fs=0 hides YouTube's native fullscreen button — it would fullscreen
+          // only the iframe, hiding our caption overlay. We provide our own
+          // fullscreen button (toggleFullscreen) that expands the whole wrapper.
           container.innerHTML =
             `<iframe id="yt-iframe"
-              src="https://www.youtube.com/embed/${sess.video_id}?autoplay=1&mute=0&enablejsapi=1"
-              allow="autoplay; encrypted-media; picture-in-picture"
-              allowfullscreen></iframe>`;
+              src="https://www.youtube.com/embed/${sess.video_id}?autoplay=1&mute=0&enablejsapi=1&fs=0"
+              allow="autoplay; encrypted-media; picture-in-picture"></iframe>`;
           // Load YT IFrame API
           const tag = document.createElement('script');
           tag.src = 'https://www.youtube.com/iframe_api';
@@ -126,6 +166,7 @@
     }
     buildPlayer();
   </script>
+  <script src="/js/captions.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

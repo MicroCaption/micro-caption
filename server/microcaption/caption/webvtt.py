@@ -71,6 +71,26 @@ class WebVTTWriter:
         """Most recent structured cue dict, or None."""
         return self._cue_data[-1] if self._cue_data else None
 
+    def tail_text(self, max_chars: int = 80) -> str:
+        """
+        Reconstruct the most recent ~2 caption lines from recent cues.
+
+        Cues are now append-only fragments (a few words each), so the latest
+        cue alone is too short for a late joiner to land on. This stitches the
+        trailing fragments back into a short running tail for SSE catch-up.
+        """
+        parts: List[str] = []
+        total = 0
+        for cue in reversed(self._cue_data):
+            t = cue['text'].replace('\n', ' ').strip()
+            if not t:
+                continue
+            parts.append(t)
+            total += len(t) + 1
+            if total >= max_chars:
+                break
+        return ' '.join(reversed(parts)).strip()
+
     def all_cue_data(self) -> List[dict]:
         """Snapshot of all structured cues — safe to read from any thread."""
         return list(self._cue_data)

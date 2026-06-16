@@ -31,7 +31,7 @@
   const inp = document.getElementById('code-input');
   inp.addEventListener('input', () => {
     if (/^\d{6}$/.test(inp.value)) {
-      window.location.href = '/watch-viewer.html?code=' + inp.value;
+      window.location.href = '/watch-viewer?code=' + inp.value;
     }
   });
 </script>

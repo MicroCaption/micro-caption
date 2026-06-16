@@ -5,28 +5,45 @@ function fmtUp(s){
   return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0');
 }
 
+function dotClass(status){
+  return status==='live'?'dot-live'
+    :status==='starting'?'dot-starting'
+    :status==='ended'?'dot-ended':'dot-error';
+}
+
 function cardHtml(s){
+  const ended=s.status==='ended';
   const badge=s.source_type==='youtube'
     ?'<span class="badge badge-yt">YouTube</span>'
+    :s.source_type==='sdi'
+    ?'<span class="badge badge-sdi">SDI</span>'
     :'<span class="badge badge-stream">Stream</span>';
-  const dotCls=s.status==='live'?'dot-live':s.status==='starting'?'dot-starting':'dot-error';
+  const dotCls=dotClass(s.status);
   const urlD=s.url.length>64?s.url.slice(0,64)+'…':s.url;
   const cueHtml=s.last_cue
     ?`<div class="card-cue">"${escH(s.last_cue.slice(0,110)+(s.last_cue.length>110?'…':''))}"</div>`
     :'<div class="card-cue idle">No captions yet…</div>';
   const errHtml=s.error?`<div style="color:#7a2a2a;font-size:.72em;margin-bottom:8px">${escH(s.error)}</div>`:'';
-  const watchUrl=s.code?window.location.origin+'/watch-viewer.html?code='+encodeURIComponent(s.code):'';
+  const watchUrl=s.code?window.location.origin+'/watch-viewer?code='+encodeURIComponent(s.code):'';
   const qrSrc=s.code?'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(watchUrl)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4':'';
   const codeHtml=s.code?`<div class="card-watch-info"><span class="session-code">${escH(s.code)}</span>${qrSrc?`<img class="watch-qr" src="${qrSrc}" alt="QR">`:''}
 </div>`:'';
-  const viewerLink=s.code?`<a href="/watch-viewer.html?code=${encodeURIComponent(s.code)}" target="_blank" rel="noopener" class="btn-watch">&#128241;&nbsp;Viewer</a>`:'';
-  return `<div class="session-card ${escH(s.status)}" id="sess-${escH(s.id)}">
+  // Ended streams: keep the card so the caption log stays viewable, but swap
+  // the live affordances for replay/remove.
+  const stopBtn=ended
+    ?`<button class="btn-stop" title="Remove from list" onclick="stopSess('${escH(s.id)}')">&times;&nbsp;Remove</button>`
+    :`<button class="btn-stop" onclick="stopSess('${escH(s.id)}')">&#9632;</button>`;
+  const watchBtn=ended
+    ?`<a href="/player?id=${escH(s.id)}&mode=replay" target="_blank" rel="noopener" class="btn-watch">&#9198;&nbsp;Caption log</a>`
+    :`<a href="/player?id=${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>`;
+  const viewerLink=(!ended&&s.code)?`<a href="/watch-viewer?code=${encodeURIComponent(s.code)}" target="_blank" rel="noopener" class="btn-watch">&#128241;&nbsp;Viewer</a>`:'';
+  return `<div class="session-card ${escH(s.status)}" id="sess-${escH(s.id)}" data-status="${escH(s.status)}">
 <div class="card-header">
   <span class="dot ${dotCls}"></span>
   <span class="card-status">${s.status.toUpperCase()}</span>
   <span class="card-id">${escH(s.id)}</span>
   ${badge}
-  <button class="btn-stop" onclick="stopSess('${escH(s.id)}')">&#9632;</button>
+  ${stopBtn}
 </div>
 <div class="card-url">${escH(urlD)}</div>
 <div class="card-stats">${fmtUp(s.uptime_s)}&nbsp;&middot;&nbsp;${s.cue_count}&nbsp;cues</div>
@@ -35,7 +52,7 @@ ${errHtml}${cueHtml}
   ${codeHtml}
   <div style="display:flex;gap:8px;align-items:center">
     ${viewerLink}
-    <a href="/player.html?id=${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>
+    ${watchBtn}
   </div>
 </div>
 </div>`;
@@ -44,7 +61,7 @@ ${errHtml}${cueHtml}
 // Per-session card elements survive polling refreshes so QR images don't flicker.
 const _cards={};
 function _qrSrc(code){
-  const url=window.location.origin+'/watch-viewer.html?code='+encodeURIComponent(code);
+  const url=window.location.origin+'/watch-viewer?code='+encodeURIComponent(code);
   return 'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(url)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4';
 }
 function _injectCard(grid,s){
@@ -57,9 +74,21 @@ function _injectCard(grid,s){
   _cards[s.id]=card;
 }
 function _updateCard(card,s){
+  // Status changed (e.g. live → ended): re-render so the card's class, dot,
+  // and action buttons all reflect the new state.
+  if(card.dataset.status!==s.status){
+    const tmp=document.createElement('div');
+    tmp.innerHTML=cardHtml(s);
+    const fresh=tmp.firstElementChild;
+    const qrImg=fresh.querySelector('.watch-qr');
+    if(qrImg&&s.code)qrImg.src=_qrSrc(s.code);
+    card.replaceWith(fresh);
+    _cards[s.id]=fresh;
+    return;
+  }
   const dot=card.querySelector('.dot');
   const lbl=card.querySelector('.card-status');
-  const dotCls=s.status==='live'?'dot-live':s.status==='starting'?'dot-starting':'dot-error';
+  const dotCls=dotClass(s.status);
   if(dot)dot.className='dot '+dotCls;
   if(lbl)lbl.textContent=s.status.toUpperCase();
   const statsEl=card.querySelector('.card-stats');
@@ -91,6 +120,9 @@ async function refresh(){
     }
     let grid=wrap.querySelector('.sessions-grid');
     if(!grid){grid=document.createElement('div');grid.className='sessions-grid';wrap.innerHTML='';wrap.appendChild(grid);}
+    // Drop the initial "Loading…" placeholder now that we have sessions.
+    const placeholder=grid.querySelector('.empty-state');
+    if(placeholder)placeholder.remove();
     // Adopt server-rendered cards so we don't create duplicates.
     for(const s of data){
       if(!_cards[s.id]){
@@ -136,7 +168,7 @@ if(addForm){
       const d=await r.json();
       if(d.session_id){
         inp.value='';
-        window.open('/player.html?id='+d.session_id,'_blank','noopener');
+        window.open('/player?id='+d.session_id,'_blank','noopener');
         await refresh();
       } else if(d.error){
         alert('Error: '+d.error);
@@ -146,5 +178,87 @@ if(addForm){
   });
 }
 
+// ── Source tabs: URL vs SDI ──────────────────────────────────────────────
+function selectSource(src){
+  document.querySelectorAll('.source-tab').forEach(t=>
+    t.classList.toggle('active',t.dataset.src===src));
+  const sdi=src==='sdi';
+  document.getElementById('add-form').style.display=sdi?'none':'flex';
+  document.getElementById('sdi-form').style.display=sdi?'flex':'none';
+  document.getElementById('sdi-strip').style.display=sdi?'flex':'none';
+  document.getElementById('url-hint').style.display=sdi?'none':'block';
+  document.getElementById('sdi-hint').style.display=sdi?'block':'none';
+  if(sdi)refreshSdi();
+}
+document.querySelectorAll('.source-tab').forEach(t=>
+  t.addEventListener('click',()=>selectSource(t.dataset.src)));
+
+// ── SDI device list + connector status strip ─────────────────────────────
+async function refreshSdi(){
+  let devices=[];
+  try{
+    const r=await fetch(API+'/api/sdi/devices');
+    const d=await r.json();
+    devices=d.devices||[];
+  }catch(e){/* leave empty */}
+
+  const sel=document.getElementById('sdi-input');
+  const inputs=devices.filter(d=>d.can_input);
+  if(!inputs.length){
+    sel.innerHTML='<option value="">No DeckLink devices detected…</option>';
+  }else{
+    const prev=sel.value;
+    sel.innerHTML=inputs.map(d=>{
+      const busy=d.session_id?' — in use':'';
+      const lock=d.signal_locked===true?' (signal)':d.signal_locked===false?' (no signal)':'';
+      return `<option value="sdi://${d.index}">SDI ${d.index} — ${escH(d.label)}${lock}${busy}</option>`;
+    }).join('');
+    if(prev)sel.value=prev;
+  }
+
+  const strip=document.getElementById('sdi-strip');
+  if(!devices.length){
+    strip.innerHTML='<span class="hint">No SDI connectors — install the Blackmagic Desktop Video driver.</span>';
+    return;
+  }
+  strip.innerHTML=devices.map(d=>{
+    let dotCls='dot-unknown',label='—';
+    if(d.session_id){dotCls='dot-busy';label='captioning';}
+    else if(d.signal_locked===true){dotCls='dot-signal';label=d.mode||'locked';}
+    else if(d.signal_locked===false){dotCls='dot-nosignal';label='no signal';}
+    const role=d.can_input&&d.can_output?'IN/OUT':d.can_output?'OUT':'IN';
+    return `<span class="sdi-conn"><span class="dot ${dotCls}"></span>`+
+      `<span class="role">SDI ${d.index} ${role}</span><span>${escH(label)}</span></span>`;
+  }).join('');
+}
+
+const sdiForm=document.getElementById('sdi-form');
+if(sdiForm){
+  sdiForm.addEventListener('submit',async e=>{
+    e.preventDefault();
+    const sel=document.getElementById('sdi-input');
+    const btn=document.getElementById('sdi-btn');
+    const url=sel.value;
+    if(!url){alert('No SDI input selected');return;}
+    btn.disabled=true; btn.textContent='Starting…';
+    try{
+      const r=await fetch(API+'/api/start',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'url='+encodeURIComponent(url),
+      });
+      const d=await r.json();
+      if(d.session_id){
+        window.open('/player?id='+d.session_id,'_blank','noopener');
+        await refresh();
+      }else if(d.error){alert('Error: '+d.error);}
+    }catch(e){alert('Request failed: '+e);}
+    finally{btn.disabled=false; btn.textContent='▶ Caption';}
+  });
+}
+
 refresh();
 setInterval(refresh,2000);
+setInterval(()=>{
+  if(document.querySelector('.source-tab.active')?.dataset.src==='sdi')refreshSdi();
+},3000);

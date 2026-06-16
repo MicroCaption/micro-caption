@@ -12,6 +12,7 @@ class AudioChunk:
 
 
 AudioCallback = Callable[[AudioChunk], None]
+EndCallback = Callable[[str], None]   # reason → None ('eos' | 'error')
 
 
 class InputOutputManager(ABC):
@@ -20,9 +21,14 @@ class InputOutputManager(ABC):
     def __init__(self, config: dict) -> None:
         self._config = config
         self._callback: Optional[AudioCallback] = None
+        self._end_callback: Optional[EndCallback] = None
 
     def set_audio_callback(self, callback: AudioCallback) -> None:
         self._callback = callback
+
+    def set_end_callback(self, callback: EndCallback) -> None:
+        """Called once when the source ends (end-of-stream) or errors out."""
+        self._end_callback = callback
 
     @abstractmethod
     def start(self) -> None: ...

@@ -16,28 +16,57 @@ io:
     # To list available devices:  pactl list sources short
     # Example:  device: alsa_input.pci-0000_00_1f.3.analog-stereo
   decklink:
-    # Populated in Phase 2 when hardware is available
-    device_index: 0
-    input_connection: sdi   # sdi | hdmi | component
+    # Blackmagic DeckLink SDI. Sessions select a sub-device via the pseudo-URL
+    # sdi://<index>; these are the fallback/passthrough defaults.
+    device_index: 0          # input sub-device (device-number) when none in URL
+    input_connection: sdi    # sdi | hdmi | component
+    signal_timeout_ms: 6000  # grace to lock to an SDI signal before the session
+                             #   errors out. A no-signal input still streams silent
+                             #   audio + filler video (no element error), so we poll
+                             #   decklinkvideosrc's `signal` flag to detect it.
+    output_index: 1          # Stage 3: SDI output sub-device for captioned passthrough
+    profile: default         # Duo 2 duplex profile: default | one-sub-device-half |
+                             #   two-sub-devices-full | two-sub-devices-half | ...
+    caption_delay_ms: 3000   # Stage 3: delay passthrough video to align with caption latency
 
 # ── ASR engine ───────────────────────────────────────────────────────────────
 asr:
-  primary: whisper    # parakeet | whisper  (switch back to parakeet once nemo_toolkit is installed)
-  chunk_duration: 2.0   # seconds per inference window
-  step_duration: 1.0    # seconds to advance window per step (overlap = chunk - step)
+  primary: parakeet   # parakeet | whisper  (parakeet primary, whisper hot-standby fallback)
+  preload_fallback: true   # load Whisper at startup too, so Parakeet→Whisper failover is instant
+  chunk_duration: 2.0   # streaming loop: VAD silence window only (no longer the inference window)
+  step_duration: 0.7    # seconds of new audio between inference steps (lower = faster commits, more GPU)
+  # Streaming (LocalAgreement-2) loop — active when the backend has word timestamps:
+  min_chunk_duration: 0.6    # min audio buffered before the first inference
+  max_buffer_duration: 14.0  # hard cap; force-commit the tail if the buffer grows past this
+  context_duration: 2.0      # seconds of committed audio kept as left-context after trimming
+  # Accuracy-over-speed: hold the most recent N seconds back as look-ahead
+  # context and re-review the tail before releasing it for display. Higher =
+  # more accurate but more delay. The broadcast-style sync delay (see `sync`)
+  # gives us a large budget, so we favour accuracy here. 0 disables.
+  review_delay: 4.0
   max_latency_ms: 2000  # warn if inference exceeds this
   vad_rms_threshold: 1.0e-4
   vad_hangover_frames: 2
   latency_window: 50    # rolling sample count for latency stats
 
   parakeet:
-    model: nvidia/parakeet-tdt_ctc-0.6b
+    model: nvidia/parakeet-tdt-0.6b-v2   # public TDT model w/ word timestamps (the _ctc-0.6b repo is gated)
     device: cuda
+    recovery_interval_sec: 8.0   # how often to retry reloading Parakeet after a failover
 
   whisper:
     model: large-v3-turbo   # swap to base.en for faster first-run download (~145 MB vs 1.6 GB)
     device: cuda
     compute_type: float16   # float16 | int8 | int8_float16
+
+# ── Broadcast-style sync (Phase 1) ─────────────────────────────────────────────
+# The viewer holds the video a fixed delay behind live so captions (which lag the
+# audio by review_delay + pacing) can be shown aligned to the video clock, and the
+# stream only reveals once a caption cache covers the delayed start point.
+sync:
+  target_delay_sec: 20.0   # how far behind live the video plays (15–30s = broadcast-style)
+  min_cache_sec: 8.0       # captions must cover this many seconds ahead before reveal
+  offset_nudge_sec: 0.0    # manual fine-tune of caption↔video alignment (+ = captions later)
 
 # ── Caption processing ────────────────────────────────────────────────────────
 caption:
@@ -74,6 +103,8 @@ output:
 # ── Monitoring ────────────────────────────────────────────────────────────────
 monitor:
   report_interval: 30   # seconds between periodic latency reports to stderr
+  gpu_interval: 0.25    # nvidia-smi poll cadence (s); fast enough to catch ASR bursts
+  gpu_avg_window: 5.0   # rolling window (s) for the smoothed GPU duty-cycle average
 
 # ── Auth (Google OAuth2) ──────────────────────────────────────────────────────
 auth:
