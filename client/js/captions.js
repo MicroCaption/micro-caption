@@ -3,9 +3,12 @@
 // The server now emits an append-only stream of small committed fragments
 // (a few words each, via LocalAgreement-2). This module stitches those
 // fragments into ≤2-line blocks and releases them at a comfortable reading
-// pace, holding each block on screen long enough to actually read — while
-// never falling more than ~MAX_LAG seconds behind live (it shortens dwell and,
-// when badly backed up, skips ahead).
+// pace, holding each block on screen long enough to actually read.
+//
+// Accuracy-first policy: every committed block is shown — blocks are NEVER
+// dropped to catch up. When the pacer falls behind live it shortens dwell
+// *gently* toward a readable floor (never flashing), so the captions stay
+// complete and the stream simply trails a few seconds behind live.
 //
 // Exposes two globals (loaded as a classic script, before player.js/watch.js):
 //   wrapLines(text, maxChars, maxLines) → string[]   (line-wrap helper)
@@ -18,15 +21,15 @@
     maxChars: 32,        // chars per line (CEA-608 safe-title width)
     maxLines: 2,         // visible rows
     readingCps: 14,      // reading speed ≈ 168 wpm (≈5 chars/word)
-    minDwell: 1200,      // ms — floor so nothing flashes by
-    maxDwell: 4000,      // ms — ceiling so the screen doesn't stall
-    // maxLagSec is the main "closeness to live" knob: the pacer speeds up
-    // (shortens dwell, then drops backlog) whenever it falls this far behind.
-    // Lower = closer to live but text turns over faster; higher = calmer reading.
-    maxLagSec: 2.0,      // target lag behind live
+    minDwell: 1500,      // ms — readable floor; dwell is never shortened past this
+    maxDwell: 5000,      // ms — ceiling so the screen doesn't stall
+    // Accuracy-first: blocks are never dropped. maxLagSec only controls how
+    // aggressively dwell is *gently* compressed (toward minDwell) when behind —
+    // it never causes a block to be skipped. Higher = calmer reading, more lag.
+    maxLagSec: 4.0,      // start compressing dwell once this far behind live
+    catchupFloorFactor: 0.5, // when behind, dwell may shrink to this × reading-dwell (but never below minDwell)
     flushGapMs: 500,     // flush a partial block after this much silence
     idleClearMs: 6000,   // clear the screen after this long with nothing new
-    maxBacklog: 3,       // queued blocks beyond this get dropped to catch up
   };
 
   // Wrap text into lines of ≤ maxChars, keeping the last maxLines lines.
@@ -118,21 +121,26 @@
   };
 
   CaptionPacer.prototype._advance = function () {
-    // Catch-up: if we're badly backed up, drop the oldest blocks so we never
-    // sit more than ~maxLag behind live.
-    while (this._queue.length > this.opt.maxBacklog) this._queue.shift();
-
+    // Accuracy-first: never drop blocks. Show every committed block in order.
     const block = this._queue.shift();
     if (!block) return;
     this._showing = block;
     this.render(block.lines);
 
-    // Base dwell from reading speed, shortened when we're behind live.
+    // Base dwell from reading speed.
     let dwell = (block.chars / this.opt.readingCps) * 1000;
     dwell = Math.max(this.opt.minDwell, Math.min(this.opt.maxDwell, dwell));
+
+    // When behind live, compress dwell *gently* toward a readable floor instead
+    // of slamming to it — the more backed up we are, the closer to the floor,
+    // but never below minDwell and never by skipping a block.
     const lag = this._latestEnd - block.endTime;
-    if (lag > this.opt.maxLagSec || this._queue.length > 1) {
-      dwell = this.opt.minDwell;
+    if (lag > this.opt.maxLagSec || this._queue.length > 0) {
+      const floor = Math.max(this.opt.minDwell, dwell * this.opt.catchupFloorFactor);
+      // Scale from full dwell down to floor as backlog/lag grows.
+      const pressure = Math.min(1, this._queue.length / 4 +
+        Math.max(0, lag - this.opt.maxLagSec) / this.opt.maxLagSec);
+      dwell = dwell - (dwell - floor) * pressure;
     }
 
     this._advanceTimer = setTimeout(() => this._onDwellEnd(), dwell);

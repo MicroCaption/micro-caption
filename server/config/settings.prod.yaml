@@ -17,7 +17,9 @@ asr:
   primary: parakeet
   chunk_duration: 2.0
   step_duration: 0.5
+  review_delay: 3.5           # accuracy-first: extra look-ahead before committing words
   max_latency_ms: 2000
+  audio_queue_max: 600        # accuracy-first: never drop audio under transient GPU stalls
   vad_rms_threshold: 5.0e-5   # tighter threshold for studio mic conditions
   vad_hangover_frames: 8
   latency_window: 100
@@ -30,6 +32,21 @@ asr:
     model: large-v3-turbo
     device: cuda
     compute_type: float16
+
+  verifier:
+    enabled: true
+    beam_size: 5
+    settle_seconds: 5.0
+    headline_seconds: 600.0
+    segment_seconds: 8.0
+    min_segment_seconds: 4.0
+    max_backlog_seconds: 60.0
+    context_seconds: 1.0
+
+accuracy:
+  log_dir: logs/sessions
+  retain_sessions: 20
+  checkpoint_seconds: 5.0
 
 caption:
   normalizer:

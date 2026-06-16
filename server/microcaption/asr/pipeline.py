@@ -154,12 +154,17 @@ class SharedASRBackend:
                 raise RuntimeError('SharedASRBackend not loaded')
             return self._backend.transcribe(samples)
 
-    def transcribe_words(self, samples: np.ndarray) -> list:
-        """Word-level transcription, serialised through the shared GPU lock."""
+    def transcribe_words(self, samples: np.ndarray, **opts) -> list:
+        """Word-level transcription, serialised through the shared GPU lock.
+
+        Extra keyword options (e.g. beam_size) are forwarded to the backend so
+        the accuracy verifier can request a slower, more thorough decode on the
+        same shared model.
+        """
         with self._lock:
             if self._backend is None:
                 raise RuntimeError('SharedASRBackend not loaded')
-            return self._backend.transcribe_words(samples)
+            return self._backend.transcribe_words(samples, **opts)
 
     def unload(self) -> None:
         with self._lock:
@@ -210,7 +215,11 @@ class ASRPipeline:
         )
         self._latency = LatencyMonitor(window=config.get('latency_window', 50))
 
-        self._audio_q: queue.Queue[AudioChunk] = queue.Queue(maxsize=100)
+        # Large bounded queue so transient GPU lag never silently drops audio
+        # (accuracy-first: completeness over closeness-to-live). ~minutes deep.
+        self._audio_q: queue.Queue[AudioChunk] = queue.Queue(
+            maxsize=config.get('audio_queue_max', 600))
+        self._dropped = 0   # audio chunks lost to sustained overload (surfaced in metrics)
         self._caption_cb: Optional[CaptionCallback] = None
 
         self._primary = None
@@ -241,11 +250,23 @@ class ASRPipeline:
             self._worker.join(timeout=6.0)
 
     def on_audio(self, chunk: AudioChunk) -> None:
-        """Called from GStreamer's main-loop thread — must be non-blocking."""
+        """Called from GStreamer's main-loop thread.
+
+        Accuracy-first: block briefly to admit the chunk rather than discarding
+        it. The queue is minutes deep, so this only ever waits under sustained
+        GPU saturation — in which case we count the loss and surface it loudly
+        instead of silently dropping words.
+        """
         try:
-            self._audio_q.put_nowait(chunk)
+            self._audio_q.put(chunk, timeout=0.5)
         except queue.Full:
-            pass  # prefer low latency over completeness; drop oldest indirectly
+            self._dropped += 1
+            print('[ASR] ⚠ audio backlog — GPU overloaded, dropping audio '
+                  f'(total dropped chunks: {self._dropped})')
+
+    @property
+    def dropped_chunks(self) -> int:
+        return self._dropped
 
     @property
     def latency_monitor(self) -> LatencyMonitor:

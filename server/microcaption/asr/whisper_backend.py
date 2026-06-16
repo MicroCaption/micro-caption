@@ -96,7 +96,8 @@ class WhisperBackend:
             parts.append(seg.text)
         return ' '.join(parts).strip()
 
-    def transcribe_words(self, samples: np.ndarray) -> list[tuple[str, float, float]]:
+    def transcribe_words(self, samples: np.ndarray,
+                         beam_size: int = 1) -> list[tuple[str, float, float]]:
         """
         Transcribe with word-level timestamps for the streaming pipeline.
 
@@ -104,13 +105,17 @@ class WhisperBackend:
         their leading space from Whisper (e.g. ' the'); callers join them
         directly. Applies the same no_speech / hallucination gating as
         transcribe(), at segment granularity.
+
+        beam_size defaults to 1 (single-pass, low latency) for the live path.
+        The accuracy verifier passes a larger beam (e.g. 5) for a more thorough,
+        slower decode used as the reference transcript.
         """
         if self._model is None:
             raise RuntimeError('WhisperBackend.load() has not been called')
         segments, _ = self._model.transcribe(
             samples,
             language='en',
-            beam_size=1,
+            beam_size=beam_size,
             condition_on_previous_text=False,
             no_speech_threshold=self._no_speech_threshold,
             temperature=0,

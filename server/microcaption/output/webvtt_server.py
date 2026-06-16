@@ -169,6 +169,8 @@ class _Handler(BaseHTTPRequestHandler):
     stop_callback: Optional[Callable[[str], None]] = None
     metrics_provider: Optional[Callable[[], Dict]] = None
     gpu_provider: Optional[Callable[[], Dict]] = None
+    logs_provider: Optional[Callable[[], List[Dict]]] = None
+    log_detail_provider: Optional[Callable[[str], Optional[Dict]]] = None
     config_snapshot: Dict = {}
 
     def log_message(self, fmt, *args):
@@ -233,6 +235,21 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == '/api/config':
             if self._require_auth() is None: return
             self._send_json_raw(json.dumps(_Handler.config_snapshot, indent=2))
+
+        # ── Per-stream logs + accuracy ────────────────────────────────────
+        elif path == '/api/logs/sessions':
+            if self._require_auth() is None: return
+            summaries = _Handler.logs_provider() if _Handler.logs_provider else []
+            self._send_json_raw(json.dumps(summaries))
+
+        elif parts[:3] == ['api', 'logs', 'session'] and len(parts) == 4:
+            if self._require_auth() is None: return
+            detail = (_Handler.log_detail_provider(parts[3])
+                      if _Handler.log_detail_provider else None)
+            if detail is None:
+                self.send_error(404)
+                return
+            self._send_json_raw(json.dumps(detail))
 
         elif path == '/api/queue':
             if self._require_auth() is None: return
@@ -595,6 +612,8 @@ class WebVTTServer:
                  stop_callback: Optional[Callable[[str], None]] = None,
                  metrics_provider: Optional[Callable[[], Dict]] = None,
                  gpu_provider: Optional[Callable[[], Dict]] = None,
+                 logs_provider: Optional[Callable[[], List[Dict]]] = None,
+                 log_detail_provider: Optional[Callable[[str], Optional[Dict]]] = None,
                  config_snapshot: Optional[Dict] = None) -> None:
         self._host: str = config.get('host', '0.0.0.0')
         self._port: int = config.get('port', 8765)
@@ -615,6 +634,8 @@ class WebVTTServer:
         _Handler.stop_callback = stop_callback
         _Handler.metrics_provider = metrics_provider
         _Handler.gpu_provider = gpu_provider
+        _Handler.logs_provider = logs_provider
+        _Handler.log_detail_provider = log_detail_provider
         _Handler.config_snapshot = config_snapshot or {}
 
     def register_session(self, session) -> None:

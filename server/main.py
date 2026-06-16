@@ -128,6 +128,7 @@ def main() -> None:
     from microcaption.output.webvtt_server import WebVTTServer
     from microcaption.output.packet_logger import PacketLogger
     from microcaption.monitor import GpuMonitor
+    from microcaption.accuracy import AccuracyVerifier, SessionStore
 
     # ── GPU monitor — background nvidia-smi poller (no-op without a GPU) ──────
     _mon_cfg = cfg.get('monitor', {})
@@ -145,6 +146,11 @@ def main() -> None:
     pkt_logger = PacketLogger(cfg.get('caption', {}).get('packet_log', {}))
     pkt_logger.open()
 
+    # ── Per-stream caption log + accuracy persistence ─────────────────────────
+    accuracy_cfg = cfg.get('accuracy', {})
+    store = SessionStore(accuracy_cfg)
+    store.open()
+
     verbose_packets = cfg.get('output', {}).get('packet_log', {}).get('verbose', False)
 
     # ── Shared ASR backend — loaded once, used by all sessions ───────────────
@@ -157,6 +163,39 @@ def main() -> None:
     _sessions: dict = {}          # session_id → Session
     _sessions_lock = threading.Lock()
     webvtt_server = None          # assigned below after server starts
+
+    # ── Per-stream log payload builders (for SessionStore + logs API) ─────────
+    def _summary_of(sess) -> dict:
+        acc = sess.accuracy_summary or {}
+        return {
+            'id': sess.id,
+            'url': sess.url,
+            'video_id': sess.video_id,
+            'source_type': sess.source_type,
+            'created_at': sess.created_at,
+            'status': sess.status,
+            'accuracy': acc.get('accuracy'),
+            'segment_count': acc.get('segment_count', 0),
+            'cue_count': sess.writer.cue_count if sess.writer else 0,
+        }
+
+    def _detail_of(sess) -> dict:
+        d = _summary_of(sess)
+        d['accuracy_summary'] = dict(sess.accuracy_summary or {})
+        d['records'] = list(sess.accuracy_records)
+        d['cues'] = sess.writer.all_cue_data() if sess.writer else []
+        return d
+
+    def make_record_callback(session_id: str):
+        def on_record(record: dict, summary: dict) -> None:
+            with _sessions_lock:
+                sess = _sessions.get(session_id)
+            if not sess:
+                return
+            sess.accuracy_records.append(record)
+            sess.accuracy_summary = summary
+            store.save(_summary_of(sess), _detail_of(sess))
+        return on_record
 
     # ── Per-session caption callback factory ──────────────────────────────────
     def make_caption_callback(session_id: str):
@@ -238,6 +277,9 @@ def main() -> None:
             _sessions[session_id] = sess
         if webvtt_server:
             webvtt_server.register_session(sess)
+        # Persist a stub immediately so the stream shows up in the Logs UI from
+        # the moment it starts (and survives a restart even with no captions).
+        store.register(_summary_of(sess), _detail_of(sess))
 
         caption_cb = make_caption_callback(session_id)
 
@@ -251,11 +293,18 @@ def main() -> None:
             sess.status = 'ended'
             if reason == 'error' and not sess.error:
                 sess.error = 'stream error'
+            if sess.verifier:
+                try:
+                    sess.verifier.stop()
+                except Exception:
+                    pass
             if sess.pipeline:
                 try:
                     sess.pipeline.stop()
                 except Exception:
                     pass
+            # Finalise the persisted log so it survives a restart.
+            store.save(_summary_of(sess), _detail_of(sess), final=True)
 
         def _launch():
             try:
@@ -264,23 +313,43 @@ def main() -> None:
                     _run_mock(session_id, caption_cb)
                     return
 
+                asr_cfg = cfg.get('asr', {})
                 pipeline = ASRPipeline(
-                    cfg.get('asr', {}),
+                    asr_cfg,
                     shared_backend=shared_backend,
                     worker_name=f'asr-{session_id}',
                 )
                 pipeline.set_caption_callback(caption_cb)
 
+                # Second, slower accuracy-verification pass (record & verify
+                # behind live). Shares the one GPU model; never blocks live.
+                verifier = None
+                if asr_cfg.get('verifier', {}).get('enabled', True) and shared_backend:
+                    verifier = AccuracyVerifier(
+                        shared_backend, asr_cfg,
+                        get_live_cues=sess.writer.all_cue_data,
+                        on_record=make_record_callback(session_id),
+                        worker_name=f'verifier-{session_id}',
+                    )
+                    sess.verifier = verifier
+
                 yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
                 yt_cfg['url'] = url
                 adapter = YouTubeAdapter(yt_cfg)
-                adapter.set_audio_callback(pipeline.on_audio)
+
+                def _feed_audio(chunk):
+                    pipeline.on_audio(chunk)
+                    if verifier:
+                        verifier.on_audio(chunk)
+                adapter.set_audio_callback(_feed_audio)
                 adapter.set_end_callback(_on_source_end)
 
                 sess.adapter = adapter
                 sess.pipeline = pipeline
 
                 pipeline.start()
+                if verifier:
+                    verifier.start()
                 adapter.start()          # blocks during yt-dlp CDN resolve
                 if sess.status != 'ended':   # a very short clip may EOS already
                     sess.status = 'live'
@@ -301,6 +370,7 @@ def main() -> None:
         if sess is None:
             return
         print(f'[Session] Stopping {session_id}')
+        sess.status = 'ended'
         if webvtt_server:
             webvtt_server.unregister_session(session_id)
         if sess.adapter:
@@ -308,11 +378,18 @@ def main() -> None:
                 sess.adapter.stop()
             except Exception:
                 pass
+        if sess.verifier:
+            try:
+                sess.verifier.stop()
+            except Exception:
+                pass
         if sess.pipeline:
             try:
                 sess.pipeline.stop()
             except Exception:
                 pass
+        # Finalise the persisted log before the session leaves the registry.
+        store.save(_summary_of(sess), _detail_of(sess), final=True)
 
     # ── Metrics provider ──────────────────────────────────────────────────────
 
@@ -335,6 +412,9 @@ def main() -> None:
         p95  = max((m.p95_ms  for m in active), default=None)
         mmax = max((m.max_ms  for m in active), default=None)
         rate = sum(m.inferences_per_second for m in monitors)
+        # Accuracy-first: audio is only ever dropped under sustained GPU overload.
+        # Surface it so a saturated server is visible rather than silently lossy.
+        dropped = sum(p.dropped_chunks for p in pipelines)
 
         return {
             'backend': backend_name,
@@ -343,7 +423,26 @@ def main() -> None:
             'max_ms':  round(mmax, 1) if mmax is not None else None,
             'rate':    round(rate, 3),
             'total':   total_count,
+            'dropped_audio_chunks': dropped,
         }
+
+    # ── Per-stream logs providers (active sessions + persisted history) ───────
+    def _logs_provider() -> list:
+        with _sessions_lock:
+            live = {sid: _summary_of(s) for sid, s in _sessions.items()}
+        summaries = list(live.values())
+        for s in store.list_summaries():
+            if s.get('id') not in live:
+                summaries.append(s)
+        summaries.sort(key=lambda s: s.get('created_at', 0), reverse=True)
+        return summaries
+
+    def _log_detail_provider(session_id: str):
+        with _sessions_lock:
+            sess = _sessions.get(session_id)
+        if sess is not None:
+            return _detail_of(sess)
+        return store.get_detail(session_id)
 
     # ── WebVTT / web server ───────────────────────────────────────────────────
     webvtt_cfg = cfg.get('output', {}).get('webvtt', {})
@@ -355,6 +454,8 @@ def main() -> None:
             stop_callback=stop_session,
             metrics_provider=_metrics_provider,
             gpu_provider=gpu_monitor.snapshot,
+            logs_provider=_logs_provider,
+            log_detail_provider=_log_detail_provider,
             config_snapshot=cfg,
         )
         webvtt_server.start()

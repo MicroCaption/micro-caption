@@ -32,8 +32,12 @@ asr:
   # Accuracy-over-speed: hold the most recent N seconds back as look-ahead
   # context and re-review the tail before releasing it for display. Higher =
   # more accurate but more delay. 0 disables (fastest, less accurate).
-  review_delay: 2.5
+  review_delay: 3.5
   max_latency_ms: 2000  # warn if inference exceeds this
+  # Accuracy-first: audio is never dropped. This is a deep bounded queue so a
+  # transient GPU stall waits rather than discarding audio; only sustained
+  # saturation (many concurrent streams) ever fills it. ~minutes deep.
+  audio_queue_max: 600
   vad_rms_threshold: 1.0e-4
   vad_hangover_frames: 2
   latency_window: 50    # rolling sample count for latency stats
@@ -46,6 +50,29 @@ asr:
     model: large-v3-turbo   # swap to base.en for faster first-run download (~145 MB vs 1.6 GB)
     device: cuda
     compute_type: float16   # float16 | int8 | int8_float16
+
+  # ── Accuracy verifier (second, slower pass) ───────────────────────────────
+  # A per-session pass that re-transcribes the same audio at high accuracy and
+  # scores how closely the live captions matched it (WER → accuracy %). Runs
+  # behind live; never drops audio. Results feed the per-stream Logs UI.
+  verifier:
+    enabled: true
+    beam_size: 5            # thorough decode for the reference transcript (live path stays beam=1)
+    settle_seconds: 5.0     # wait this long after a window before scoring, so the live path
+                            # (which commits with review_delay look-ahead) has caught up first —
+                            # otherwise correct-but-late captions score as false misses
+    headline_seconds: 600.0 # the headline accuracy % aligns the whole reference vs the whole live
+                            # transcript over this rolling span, so per-window boundary effects cancel
+    segment_seconds: 8.0    # transcribe in windows of ~this length (or on a VAD silence boundary)
+    min_segment_seconds: 4.0  # don't verify a window shorter than this unless an utterance ended
+    max_backlog_seconds: 60.0 # if the verifier falls this far behind, note it instead of buffering more
+    context_seconds: 1.0    # left-context kept after each verified window
+
+# ── Accuracy / per-stream logs persistence ────────────────────────────────────
+accuracy:
+  log_dir: logs/sessions   # where per-stream logs + index.json are written
+  retain_sessions: 20      # keep the most recent N streams on disk; prune older
+  checkpoint_seconds: 5.0  # min interval between incremental disk checkpoints
 
 # ── Caption processing ────────────────────────────────────────────────────────
 caption:

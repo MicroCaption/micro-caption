@@ -33,7 +33,6 @@ const pacer = new CaptionPacer(renderLines, {
   minDwell: 3000,     // hold each block ≥3s for comfortable reading
   maxDwell: 6000,     // but cap so a long block doesn't stall the screen
   maxLagSec: 6.0,     // tolerate more lag rather than churn text quickly
-  maxBacklog: 4,      // keep a little more buffered before catching up
   idleClearMs: 8000,
 });
 
