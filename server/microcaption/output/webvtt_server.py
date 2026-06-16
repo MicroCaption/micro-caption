@@ -168,6 +168,7 @@ class _Handler(BaseHTTPRequestHandler):
     start_callback: Optional[Callable[[str], str]] = None
     stop_callback: Optional[Callable[[str], None]] = None
     metrics_provider: Optional[Callable[[], Dict]] = None
+    gpu_provider: Optional[Callable[[], Dict]] = None
     config_snapshot: Dict = {}
 
     def log_message(self, fmt, *args):
@@ -379,10 +380,18 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+        gpu: Dict = {'available': False}
+        if _Handler.gpu_provider:
+            try:
+                gpu = _Handler.gpu_provider()
+            except Exception:
+                pass
+
         sessions = list(self._session_registry.values())
         payload = {
             'session_count': len(sessions),
             'asr': asr,
+            'gpu': gpu,
             'captions': {
                 'total_cues': sum(
                     s.writer.cue_count for s in sessions if s.writer
@@ -585,6 +594,7 @@ class WebVTTServer:
                  start_callback: Optional[Callable[[str], str]] = None,
                  stop_callback: Optional[Callable[[str], None]] = None,
                  metrics_provider: Optional[Callable[[], Dict]] = None,
+                 gpu_provider: Optional[Callable[[], Dict]] = None,
                  config_snapshot: Optional[Dict] = None) -> None:
         self._host: str = config.get('host', '0.0.0.0')
         self._port: int = config.get('port', 8765)
@@ -604,6 +614,7 @@ class WebVTTServer:
         _Handler.start_callback = start_callback
         _Handler.stop_callback = stop_callback
         _Handler.metrics_provider = metrics_provider
+        _Handler.gpu_provider = gpu_provider
         _Handler.config_snapshot = config_snapshot or {}
 
     def register_session(self, session) -> None:

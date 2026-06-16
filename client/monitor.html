@@ -4,6 +4,29 @@
   <meta charset="utf-8">
   <title>MicroCaption &mdash; Monitor</title>
   <link rel="stylesheet" href="/css/shared.css">
+  <style>
+    /* ── Monitor-specific ──────────────────────────────────────────────── */
+    .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    @media (max-width: 760px) { .grid4 { grid-template-columns: 1fr 1fr; } }
+    .stat-sub { color: #2c2c2c; font-size: 0.7em; margin-top: 3px; }
+    /* Horizontal gauge bar */
+    .gauge { height: 5px; background: #181818; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+    .gauge > i { display: block; height: 100%; width: 0; background: #3a9a4a;
+      border-radius: 3px; transition: width .4s ease, background .4s ease; }
+    /* Chart cards */
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 760px) { .chart-grid { grid-template-columns: 1fr; } }
+    .chart-card { background: #0f0f0f; border: 1px solid #1c1c1c; border-radius: 5px; padding: 14px 16px; }
+    .chart-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+    .chart-title { color: #555; font-size: 0.68em; letter-spacing: 0.1em; text-transform: uppercase; }
+    .chart-val { color: #ccc; font-size: 0.92em; }
+    .chart-val .unit { color: #3a3a3a; font-size: 0.78em; margin-left: 2px; }
+    .chart-card canvas { display: block; width: 100%; height: 72px; }
+    .legend { display: inline-flex; gap: 12px; margin-left: 10px; }
+    .legend span { color: #444; font-size: 0.66em; }
+    .legend i { display: inline-block; width: 8px; height: 2px; vertical-align: middle; margin-right: 4px; }
+    .gpu-offline { color: #555; font-size: 0.82em; font-style: italic; }
+  </style>
 </head>
 <body>
 <nav>
@@ -16,29 +39,111 @@
   <a href="/logout" class="nav-link">Log out</a>
 </nav>
 <main>
-  <div class="grid2">
-    <div>
-      <h2>ASR Latency (aggregate)</h2>
+  <!-- ── System summary ─────────────────────────────────────────────────── -->
+  <h2>System</h2>
+  <div class="grid4">
+    <div class="card">
+      <div class="stat-label">Active streams</div>
+      <div class="stat-val" id="sys-streams">—</div>
+      <div class="stat-sub" id="sys-streams-sub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">Total cues</div>
+      <div class="stat-val" id="sys-cues">—</div>
+      <div class="stat-sub" id="sys-cues-sub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">ASR backend</div>
+      <div class="stat-val" id="sys-backend">—</div>
+      <div class="stat-sub" id="sys-rate-sub">&nbsp;</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">GPU</div>
+      <div class="stat-val" id="sys-gpu">—</div>
+      <div class="stat-sub" id="sys-gpu-sub">&nbsp;</div>
+    </div>
+  </div>
+
+  <!-- ── GPU ─────────────────────────────────────────────────────────────── -->
+  <h2 style="margin-top:22px">GPU</h2>
+  <div id="gpu-section">
+    <div class="grid4">
       <div class="card">
-        <table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
-          <tr><td>Mean</td><td id="lat-mean">—</td></tr>
-          <tr><td>p95</td><td id="lat-p95">—</td></tr>
-          <tr><td>Max</td><td id="lat-max">—</td></tr>
-          <tr><td>Rate</td><td id="lat-rate">—</td></tr>
-          <tr><td>Total inferences</td><td id="lat-total">—</td></tr>
-        </tbody></table>
+        <div class="stat-label">Utilization</div>
+        <div class="stat-val" id="gpu-util">—</div>
+        <div class="gauge"><i id="gpu-util-bar"></i></div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Memory</div>
+        <div class="stat-val" id="gpu-mem">—</div>
+        <div class="gauge"><i id="gpu-mem-bar"></i></div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Temperature</div>
+        <div class="stat-val" id="gpu-temp">—</div>
+        <div class="gauge"><i id="gpu-temp-bar"></i></div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Power</div>
+        <div class="stat-val" id="gpu-power">—</div>
+        <div class="gauge"><i id="gpu-power-bar"></i></div>
       </div>
     </div>
-    <div>
-      <h2>System</h2>
-      <div class="card">
-        <div><div class="stat-label">Active streams</div><div class="stat-val" id="sys-streams">—</div></div>
-        <div style="margin-top:14px"><div class="stat-label">Total cues</div><div class="stat-val" id="sys-cues">—</div></div>
-        <div style="margin-top:14px"><div class="stat-label">GPU util</div><div class="stat-val stub">Phase 2</div></div>
+    <div class="chart-grid" style="margin-top:14px">
+      <div class="chart-card">
+        <div class="chart-head"><span class="chart-title">GPU utilization</span>
+          <span class="chart-val" id="cv-util">—<span class="unit">%</span></span></div>
+        <canvas id="ch-util"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><span class="chart-title">VRAM used</span>
+          <span class="chart-val" id="cv-mem">—<span class="unit">MiB</span></span></div>
+        <canvas id="ch-mem"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><span class="chart-title">Temperature</span>
+          <span class="chart-val" id="cv-temp">—<span class="unit">°C</span></span></div>
+        <canvas id="ch-temp"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><span class="chart-title">Power draw</span>
+          <span class="chart-val" id="cv-power">—<span class="unit">W</span></span></div>
+        <canvas id="ch-power"></canvas>
       </div>
     </div>
   </div>
-  <h2 style="margin-top:20px">Sessions</h2>
+  <div id="gpu-offline" class="card gpu-offline" style="display:none"></div>
+
+  <!-- ── ASR performance ─────────────────────────────────────────────────── -->
+  <h2 style="margin-top:22px">ASR performance</h2>
+  <div class="grid4">
+    <div class="card"><div class="stat-label">Mean latency</div><div class="stat-val" id="lat-mean">—</div></div>
+    <div class="card"><div class="stat-label">p95 latency</div><div class="stat-val" id="lat-p95">—</div></div>
+    <div class="card"><div class="stat-label">Max latency</div><div class="stat-val" id="lat-max">—</div></div>
+    <div class="card"><div class="stat-label">Throughput</div><div class="stat-val" id="lat-rate">—</div>
+      <div class="stat-sub" id="lat-total-sub">&nbsp;</div></div>
+  </div>
+  <div class="chart-grid" style="margin-top:14px">
+    <div class="chart-card">
+      <div class="chart-head">
+        <span class="chart-title">Inference latency
+          <span class="legend"><span><i style="background:#3a9a4a"></i>mean</span><span><i style="background:#8a7a2a"></i>p95</span></span>
+        </span>
+        <span class="chart-val" id="cv-lat">—<span class="unit">ms</span></span>
+      </div>
+      <canvas id="ch-lat"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="chart-head"><span class="chart-title">Throughput
+          <span class="legend"><span><i style="background:#3a9a4a"></i>infer/s</span><span><i style="background:#3a5a9a"></i>streams</span></span>
+        </span>
+        <span class="chart-val" id="cv-rate">—<span class="unit">/s</span></span></div>
+      <canvas id="ch-rate"></canvas>
+    </div>
+  </div>
+
+  <!-- ── Sessions ────────────────────────────────────────────────────────── -->
+  <h2 style="margin-top:22px">Sessions</h2>
   <div class="card">
     <table><thead><tr>
       <th>ID</th><th>Type</th><th>Status</th><th>Uptime</th><th>Cues</th><th></th>
@@ -50,41 +155,185 @@
 </main>
 <script src="/js/config.js"></script>
 <script>
-function fms(v){return v==null?'—':v.toFixed(0)+' ms';}
+// ── Time-series ring buffers ──────────────────────────────────────────────
+const HISTORY = 150;                 // ~5 min at the 2 s refresh cadence
+const buf = {};                      // name → Array<number|null>
+function push(name, v){
+  (buf[name] ||= []).push(v);
+  if (buf[name].length > HISTORY) buf[name].shift();
+}
+
+// ── Minimal canvas line chart (devicePixelRatio-aware) ────────────────────
+function drawChart(id, series, opts){
+  opts = opts || {};
+  const cv = document.getElementById(id);
+  if (!cv) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w*dpr || cv.height !== h*dpr){ cv.width = w*dpr; cv.height = h*dpr; }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+
+  // y-range across all series
+  let lo = opts.min, hi = opts.max;
+  if (lo == null || hi == null){
+    let mn = Infinity, mx = -Infinity;
+    for (const s of series) for (const v of s.data) if (v!=null){ if(v<mn)mn=v; if(v>mx)mx=v; }
+    if (mn === Infinity){ mn = 0; mx = 1; }
+    if (lo == null) lo = opts.minZero ? Math.min(0, mn) : mn;
+    if (hi == null) hi = mx;
+  }
+  if (hi - lo < 1e-6) hi = lo + 1;
+  const pad = 3;
+  const x = i => pad + (w-2*pad) * (HISTORY<=1 ? 0 : i/(HISTORY-1));
+  const y = v => h-pad - (h-2*pad) * ((v-lo)/(hi-lo));
+
+  // baseline grid
+  ctx.strokeStyle = '#181818'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad,h-pad); ctx.lineTo(w-pad,h-pad); ctx.stroke();
+
+  for (const s of series){
+    const data = s.data, n = data.length;
+    const off = HISTORY - n;          // right-align newest sample
+    // fill under primary line
+    if (s.fill){
+      ctx.beginPath(); let started=false;
+      for (let i=0;i<n;i++){ const v=data[i]; if(v==null){started=false;continue;}
+        const px=x(off+i), py=y(v);
+        if(!started){ ctx.moveTo(px,h-pad); ctx.lineTo(px,py); started=true; } else ctx.lineTo(px,py); }
+      if (n){ ctx.lineTo(x(off+n-1), h-pad); ctx.closePath(); ctx.fillStyle = s.fill; ctx.fill(); }
+    }
+    ctx.beginPath(); let started=false;
+    for (let i=0;i<n;i++){ const v=data[i]; if(v==null){started=false;continue;}
+      const px=x(off+i), py=y(v);
+      if(!started){ ctx.moveTo(px,py); started=true; } else ctx.lineTo(px,py); }
+    ctx.strokeStyle = s.color; ctx.lineWidth = s.width||1.4;
+    ctx.lineJoin='round'; ctx.stroke();
+  }
+}
+
+// ── Formatting helpers ────────────────────────────────────────────────────
+function fms(v){ return v==null?'—':v.toFixed(0)+' ms'; }
 function fup(s){
   if(s==null)return'—';
   const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60);
   return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0');
 }
+function setBar(id, pct, color){
+  const el = document.getElementById(id); if(!el) return;
+  el.style.width = (pct==null?0:Math.max(0,Math.min(100,pct)))+'%';
+  if (color) el.style.background = color;
+}
+// green → amber → red ramp for a 0-100 value
+function heat(pct){ if(pct==null)return'#3a9a4a'; return pct>=85?'#9a3a3a':pct>=65?'#8a7a2a':'#3a9a4a'; }
+
+// ── GPU section render ─────────────────────────────────────────────────────
+function renderGpu(gpu){
+  const section = document.getElementById('gpu-section');
+  const offline = document.getElementById('gpu-offline');
+  if (!gpu || !gpu.available || !gpu.gpus || !gpu.gpus.length){
+    section.style.display = 'none';
+    offline.style.display = '';
+    offline.textContent = 'GPU monitoring unavailable' + (gpu && gpu.reason ? ' — '+gpu.reason : '.');
+    document.getElementById('sys-gpu').textContent = 'n/a';
+    document.getElementById('sys-gpu-sub').textContent = (gpu && gpu.reason) || '';
+    return;
+  }
+  section.style.display = '';
+  offline.style.display = 'none';
+  const g = gpu.gpus[0];   // primary GPU (shared backend lives here)
+
+  document.getElementById('sys-gpu').textContent = g.name.replace(/NVIDIA GeForce /,'');
+  document.getElementById('sys-gpu-sub').textContent =
+    (g.clock_sm_mhz!=null? g.clock_sm_mhz.toFixed(0)+' MHz SM':'') ;
+
+  const util = g.util_gpu, memPct = g.mem_pct, temp = g.temp_c, pw = g.power_w;
+  document.getElementById('gpu-util').textContent  = util!=null? util.toFixed(0)+' %' : '—';
+  document.getElementById('gpu-mem').textContent   =
+    g.mem_used_mb!=null? (g.mem_used_mb/1024).toFixed(1)+' / '+(g.mem_total_mb/1024).toFixed(1)+' GB' : '—';
+  document.getElementById('gpu-temp').textContent  = temp!=null? temp.toFixed(0)+' °C' : '—';
+  document.getElementById('gpu-power').textContent =
+    pw!=null? pw.toFixed(0)+' / '+(g.power_limit_w!=null?g.power_limit_w.toFixed(0):'?')+' W' : '—';
+
+  setBar('gpu-util-bar',  util,   heat(util));
+  setBar('gpu-mem-bar',   memPct, heat(memPct));
+  // temp ramp: 30-90°C mapped to 0-100
+  setBar('gpu-temp-bar',  temp!=null?(temp-30)/0.6:null, temp>=80?'#9a3a3a':temp>=70?'#8a7a2a':'#3a9a4a');
+  setBar('gpu-power-bar', g.power_pct, heat(g.power_pct));
+
+  push('util', util); push('mem', g.mem_used_mb); push('temp', temp); push('power', pw);
+
+  document.getElementById('cv-util').firstChild.textContent  = util!=null? util.toFixed(0):'—';
+  document.getElementById('cv-mem').firstChild.textContent   = g.mem_used_mb!=null? g.mem_used_mb.toFixed(0):'—';
+  document.getElementById('cv-temp').firstChild.textContent  = temp!=null? temp.toFixed(0):'—';
+  document.getElementById('cv-power').firstChild.textContent = pw!=null? pw.toFixed(0):'—';
+
+  drawChart('ch-util',  [{data:buf.util, color:'#3a9a4a', fill:'rgba(58,154,74,0.10)'}], {min:0,max:100});
+  drawChart('ch-mem',   [{data:buf.mem,  color:'#3a5a9a', fill:'rgba(58,90,154,0.10)'}], {min:0,max:g.mem_total_mb});
+  drawChart('ch-temp',  [{data:buf.temp, color:'#8a7a2a', fill:'rgba(138,122,42,0.10)'}], {minZero:true});
+  drawChart('ch-power', [{data:buf.power,color:'#9a3a5a', fill:'rgba(154,58,90,0.10)'}], {min:0,max:g.power_limit_w||undefined,minZero:true});
+}
+
+// ── Main refresh loop ──────────────────────────────────────────────────────
 async function refresh(){
   try{
-    const[m,ss]=await Promise.all([
+    const [m, ss] = await Promise.all([
       fetch(API+'/api/metrics').then(r=>r.json()),
       fetch(API+'/api/sessions').then(r=>r.json()),
     ]);
-    const g=s=>document.getElementById(s);
-    g('lat-mean').textContent=fms(m.asr?.mean_ms);
-    g('lat-p95').textContent=fms(m.asr?.p95_ms);
-    g('lat-max').textContent=fms(m.asr?.max_ms);
-    g('lat-rate').textContent=m.asr?.rate!=null?m.asr.rate.toFixed(2)+'/s':'—';
-    g('lat-total').textContent=m.asr?.total??'—';
-    if(g('sys-streams'))g('sys-streams').textContent=m.session_count??'—';
-    if(g('sys-cues'))g('sys-cues').textContent=m.captions?.total_cues??'—';
-    const tb=g('sessions-tbody');
-    if(tb&&ss.length){
-      tb.innerHTML=ss.map(s=>`<tr>
+    const g = id => document.getElementById(id);
+
+    // System summary
+    g('sys-streams').textContent = m.session_count ?? '—';
+    g('sys-cues').textContent    = m.captions?.total_cues ?? '—';
+    g('sys-backend').textContent = m.asr?.backend ?? '—';
+    g('sys-rate-sub').textContent = m.asr?.rate!=null ? m.asr.rate.toFixed(2)+' infer/s' : ' ';
+    const live = (ss||[]).filter(s=>s.status==='live').length;
+    g('sys-streams-sub').textContent = (ss && ss.length) ? live+' live / '+ss.length+' total' : ' ';
+
+    // ASR stats
+    g('lat-mean').textContent = fms(m.asr?.mean_ms);
+    g('lat-p95').textContent  = fms(m.asr?.p95_ms);
+    g('lat-max').textContent  = fms(m.asr?.max_ms);
+    g('lat-rate').textContent = m.asr?.rate!=null ? m.asr.rate.toFixed(2)+' /s' : '—';
+    g('lat-total-sub').textContent = m.asr?.total!=null ? m.asr.total+' inferences' : ' ';
+
+    push('latMean', m.asr?.mean_ms ?? null);
+    push('latP95',  m.asr?.p95_ms ?? null);
+    push('rate',    m.asr?.rate ?? 0);
+    push('streams', m.session_count ?? 0);
+    g('cv-lat').firstChild.textContent  = m.asr?.mean_ms!=null? m.asr.mean_ms.toFixed(0):'—';
+    g('cv-rate').firstChild.textContent = m.asr?.rate!=null? m.asr.rate.toFixed(2):'—';
+    drawChart('ch-lat', [
+      {data:buf.latMean, color:'#3a9a4a', fill:'rgba(58,154,74,0.08)'},
+      {data:buf.latP95,  color:'#8a7a2a'},
+    ], {minZero:true});
+    drawChart('ch-rate', [
+      {data:buf.rate,    color:'#3a9a4a', fill:'rgba(58,154,74,0.08)'},
+      {data:buf.streams, color:'#3a5a9a'},
+    ], {minZero:true});
+
+    // GPU
+    renderGpu(m.gpu);
+
+    // Sessions table
+    const tb = g('sessions-tbody');
+    if (tb && ss && ss.length){
+      tb.innerHTML = ss.map(s=>`<tr>
         <td>${s.id}</td><td>${s.source_type}</td>
         <td style="color:${s.status==='live'?'#3a9a4a':'#555'}">${s.status}</td>
         <td>${fup(s.uptime_s)}</td><td>${s.cue_count}</td>
-        <td><a href="/player?id=${s.id}" target="_blank" style="color:#3a9a4a">Watch</a></td>
+        <td><a href="/player?id=${s.id}" target="_blank" class="btn-watch">Watch</a></td>
       </tr>`).join('');
-    }else if(tb){
-      tb.innerHTML='<tr><td colspan="6" class="stub">No active sessions.</td></tr>';
+    } else if (tb){
+      tb.innerHTML = '<tr><td colspan="6" class="stub">No active sessions.</td></tr>';
     }
-    g('refresh-ts').textContent='Last update: '+new Date().toLocaleTimeString();
-  }catch(e){}
+    g('refresh-ts').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+  }catch(e){ /* keep last good frame */ }
 }
-refresh();setInterval(refresh,2000);
+refresh(); setInterval(refresh, 2000);
+window.addEventListener('resize', ()=>{ /* canvases redraw on next refresh */ });
 </script>
 </body>
 </html>

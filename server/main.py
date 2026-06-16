@@ -127,6 +127,13 @@ def main() -> None:
     from microcaption.output.terminal_sink import TerminalSink
     from microcaption.output.webvtt_server import WebVTTServer
     from microcaption.output.packet_logger import PacketLogger
+    from microcaption.monitor import GpuMonitor
+
+    # ── GPU monitor — background nvidia-smi poller (no-op without a GPU) ──────
+    gpu_monitor = GpuMonitor(
+        interval=cfg.get('monitor', {}).get('gpu_interval', 1.0)
+    )
+    gpu_monitor.start()
 
     # ── Shared caption components (stateless, one instance each) ─────────────
     normalizer = CaptionNormalizer(cfg.get('caption', {}).get('normalizer', {}))
@@ -345,6 +352,7 @@ def main() -> None:
             start_callback=start_session,
             stop_callback=stop_session,
             metrics_provider=_metrics_provider,
+            gpu_provider=gpu_monitor.snapshot,
             config_snapshot=cfg,
         )
         webvtt_server.start()
