@@ -82,6 +82,8 @@ output:
 # ── Monitoring ────────────────────────────────────────────────────────────────
 monitor:
   report_interval: 30   # seconds between periodic latency reports to stderr
+  gpu_interval: 0.25    # nvidia-smi poll cadence (s); fast enough to catch ASR bursts
+  gpu_avg_window: 5.0   # rolling window (s) for the smoothed GPU duty-cycle average
 
 # ── Auth (Google OAuth2) ──────────────────────────────────────────────────────
 auth:

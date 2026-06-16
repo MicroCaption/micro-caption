@@ -91,8 +91,10 @@
     </div>
     <div class="chart-grid" style="margin-top:14px">
       <div class="chart-card">
-        <div class="chart-head"><span class="chart-title">GPU utilization</span>
-          <span class="chart-val" id="cv-util">—<span class="unit">%</span></span></div>
+        <div class="chart-head"><span class="chart-title">GPU utilization
+            <span class="legend"><span><i style="background:#1f5a2a"></i>inst</span><span><i style="background:#3a9a4a"></i>avg</span></span>
+          </span>
+          <span class="chart-val" id="cv-util">—<span class="unit">% avg</span></span></div>
         <canvas id="ch-util"></canvas>
       </div>
       <div class="chart-card">
@@ -106,8 +108,10 @@
         <canvas id="ch-temp"></canvas>
       </div>
       <div class="chart-card">
-        <div class="chart-head"><span class="chart-title">Power draw</span>
-          <span class="chart-val" id="cv-power">—<span class="unit">W</span></span></div>
+        <div class="chart-head"><span class="chart-title">Power draw
+            <span class="legend"><span><i style="background:#5a2336"></i>inst</span><span><i style="background:#9a3a5a"></i>avg</span></span>
+          </span>
+          <span class="chart-val" id="cv-power">—<span class="unit">W avg</span></span></div>
         <canvas id="ch-power"></canvas>
       </div>
     </div>
@@ -248,31 +252,45 @@ function renderGpu(gpu){
   document.getElementById('sys-gpu-sub').textContent =
     (g.clock_sm_mhz!=null? g.clock_sm_mhz.toFixed(0)+' MHz SM':'') ;
 
-  const util = g.util_gpu, memPct = g.mem_pct, temp = g.temp_c, pw = g.power_w;
-  document.getElementById('gpu-util').textContent  = util!=null? util.toFixed(0)+' %' : '—';
+  // Spiky instantaneous values plus the server-side rolling duty-cycle average.
+  const util = g.util_gpu, utilAvg = g.util_gpu_avg ?? util;
+  const memPct = g.mem_pct, temp = g.temp_c;
+  const pw = g.power_w, pwAvg = g.power_w_avg ?? pw;
+  const utilShow = utilAvg, pwShow = pwAvg, pwPctShow = g.power_pct_avg ?? g.power_pct;
+
+  document.getElementById('gpu-util').textContent  = utilShow!=null? utilShow.toFixed(0)+' %' : '—';
   document.getElementById('gpu-mem').textContent   =
     g.mem_used_mb!=null? (g.mem_used_mb/1024).toFixed(1)+' / '+(g.mem_total_mb/1024).toFixed(1)+' GB' : '—';
   document.getElementById('gpu-temp').textContent  = temp!=null? temp.toFixed(0)+' °C' : '—';
   document.getElementById('gpu-power').textContent =
-    pw!=null? pw.toFixed(0)+' / '+(g.power_limit_w!=null?g.power_limit_w.toFixed(0):'?')+' W' : '—';
+    pwShow!=null? pwShow.toFixed(0)+' / '+(g.power_limit_w!=null?g.power_limit_w.toFixed(0):'?')+' W' : '—';
 
-  setBar('gpu-util-bar',  util,   heat(util));
-  setBar('gpu-mem-bar',   memPct, heat(memPct));
+  setBar('gpu-util-bar',  utilShow, heat(utilShow));
+  setBar('gpu-mem-bar',   memPct,   heat(memPct));
   // temp ramp: 30-90°C mapped to 0-100
   setBar('gpu-temp-bar',  temp!=null?(temp-30)/0.6:null, temp>=80?'#9a3a3a':temp>=70?'#8a7a2a':'#3a9a4a');
-  setBar('gpu-power-bar', g.power_pct, heat(g.power_pct));
+  setBar('gpu-power-bar', pwPctShow, heat(pwPctShow));
 
-  push('util', util); push('mem', g.mem_used_mb); push('temp', temp); push('power', pw);
+  push('util', util);   push('utilAvg', utilAvg);
+  push('mem', g.mem_used_mb); push('temp', temp);
+  push('power', pw);    push('powerAvg', pwAvg);
 
-  document.getElementById('cv-util').firstChild.textContent  = util!=null? util.toFixed(0):'—';
+  document.getElementById('cv-util').firstChild.textContent  = utilShow!=null? utilShow.toFixed(0):'—';
   document.getElementById('cv-mem').firstChild.textContent   = g.mem_used_mb!=null? g.mem_used_mb.toFixed(0):'—';
   document.getElementById('cv-temp').firstChild.textContent  = temp!=null? temp.toFixed(0):'—';
-  document.getElementById('cv-power').firstChild.textContent = pw!=null? pw.toFixed(0):'—';
+  document.getElementById('cv-power').firstChild.textContent = pwShow!=null? pwShow.toFixed(0):'—';
 
-  drawChart('ch-util',  [{data:buf.util, color:'#3a9a4a', fill:'rgba(58,154,74,0.10)'}], {min:0,max:100});
-  drawChart('ch-mem',   [{data:buf.mem,  color:'#3a5a9a', fill:'rgba(58,90,154,0.10)'}], {min:0,max:g.mem_total_mb});
-  drawChart('ch-temp',  [{data:buf.temp, color:'#8a7a2a', fill:'rgba(138,122,42,0.10)'}], {minZero:true});
-  drawChart('ch-power', [{data:buf.power,color:'#9a3a5a', fill:'rgba(154,58,90,0.10)'}], {min:0,max:g.power_limit_w||undefined,minZero:true});
+  // Faint instantaneous line (the spikes) + bold rolling-average line (duty cycle).
+  drawChart('ch-util', [
+    {data:buf.util,    color:'#1f5a2a', width:1,   fill:'rgba(58,154,74,0.06)'},
+    {data:buf.utilAvg, color:'#3a9a4a', width:1.6},
+  ], {min:0,max:100});
+  drawChart('ch-mem',  [{data:buf.mem,  color:'#3a5a9a', fill:'rgba(58,90,154,0.10)'}], {min:0,max:g.mem_total_mb});
+  drawChart('ch-temp', [{data:buf.temp, color:'#8a7a2a', fill:'rgba(138,122,42,0.10)'}], {minZero:true});
+  drawChart('ch-power', [
+    {data:buf.power,    color:'#5a2336', width:1,   fill:'rgba(154,58,90,0.06)'},
+    {data:buf.powerAvg, color:'#9a3a5a', width:1.6},
+  ], {min:0,max:g.power_limit_w||undefined,minZero:true});
 }
 
 // ── Main refresh loop ──────────────────────────────────────────────────────

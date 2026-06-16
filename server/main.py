@@ -130,8 +130,10 @@ def main() -> None:
     from microcaption.monitor import GpuMonitor
 
     # ── GPU monitor — background nvidia-smi poller (no-op without a GPU) ──────
+    _mon_cfg = cfg.get('monitor', {})
     gpu_monitor = GpuMonitor(
-        interval=cfg.get('monitor', {}).get('gpu_interval', 1.0)
+        interval=_mon_cfg.get('gpu_interval', 0.25),
+        avg_window_s=_mon_cfg.get('gpu_avg_window', 5.0),
     )
     gpu_monitor.start()
 
