@@ -41,9 +41,15 @@ class DiarizationPass:
         self._settle: float = float(sp.get('settle_seconds', 5.0))
         self._gap: float = float(sp.get('utterance_gap_seconds', 0.8))
         self._pad: float = float(sp.get('context_seconds', 0.25))
+        # Cap utterance length so continuous speech (few pauses > gap) is still
+        # chopped into bounded, embeddable spans — otherwise a group can grow
+        # past the audio-retain window and be skipped (pruned) before scoring.
+        self._max_utt: float = float(sp.get('max_utterance_seconds', 10.0))
         self._min_utt_samples = int(float(d.get('min_utterance_seconds', 0.8)) * self._sr)
-        # Retain enough audio to re-embed an utterance after the settle delay.
-        self._retain_seconds: float = max(60.0, self._settle + 60.0)
+        # Retain enough audio to re-embed an utterance after the settle delay,
+        # accounting for the capped utterance length and some processing lag.
+        self._retain_seconds: float = max(90.0, self._settle + self._max_utt + 60.0)
+        self._skipped = 0          # utterances skipped because their audio was pruned
 
         self._clusterer = OnlineSpeakerClusterer(d)
 
@@ -117,14 +123,21 @@ class DiarizationPass:
         while self._cursor < n:
             i = self._cursor
             t0 = cues[i].get('start', 0.0)
-            # Grow the utterance while the inter-cue gap stays small.
+            # Grow the utterance while the inter-cue gap stays small, but stop at
+            # max_utterance_seconds so continuous speech is still chopped into
+            # bounded spans that fit the audio-retain window.
             j = i + 1
-            while j < n and (cues[j].get('start', 0.0)
-                             - cues[j - 1].get('end', 0.0)) <= self._gap:
+            capped = False
+            while j < n:
+                if (cues[j].get('start', 0.0) - cues[j - 1].get('end', 0.0)) > self._gap:
+                    break                       # a real pause → utterance boundary
+                if (cues[j - 1].get('end', 0.0) - t0) >= self._max_utt:
+                    capped = True               # length cap → close the span here
+                    break
                 j += 1
-            # Need the following cue (or a forced flush) to confirm the utterance
-            # ended; otherwise it may still be growing.
-            if j >= n and not force:
+            # Need a following cue (or the length cap, or a forced flush) to
+            # confirm the boundary; otherwise the utterance may still be growing.
+            if j >= n and not capped and not force:
                 break
             group = cues[i:j]
             t1 = max(c.get('end', 0.0) for c in group)
@@ -137,6 +150,10 @@ class DiarizationPass:
             self._cursor = j
             if t0 < self._buf_start - 0.05:
                 # Audio already pruned (we fell behind) — can't embed; skip.
+                self._skipped += 1
+                if self._skipped % 10 == 1:
+                    print(f'[Diarizer] fell behind — {self._skipped} utterances '
+                          'skipped (audio pruned); consider raising retain/settle')
                 continue
 
             samples = self._slice(t0, t1)

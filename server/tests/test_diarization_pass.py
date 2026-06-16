@@ -108,6 +108,34 @@ class DiarizationPassTests(unittest.TestCase):
         self.dp._label_ready(force=False)
         self.assertEqual(self.updates, [])
 
+    def test_continuous_speech_is_capped_and_fully_labelled(self):
+        # 24s of one speaker with NO pauses > the gap. Without a length cap this
+        # would be one giant utterance that outgrows the audio buffer and gets
+        # skipped; the cap must split it so every cue is labelled.
+        cfg = _config()
+        cfg['second_pass']['max_utterance_seconds'] = 5.0
+        dp = DiarizationPass(FakeEmbedder(), cfg,
+                             get_live_cues=lambda: list(self.cues),
+                             on_update=self.updates.append)
+        # Contiguous 0.8s cues, no gaps, 0..24s.
+        self.cues = [{'start': k * 0.8, 'end': (k + 1) * 0.8, 'text': f'w{k}'}
+                     for k in range(30)]
+        self._feed_into(dp, [(0.0, 24.0, 1)], total_seconds=26.0)
+        dp._label_ready(force=True)
+
+        labelled = {u['start']: u['speaker'] for upd in self.updates for u in upd}
+        # Every cue got a (single-speaker) label, and the span was split into
+        # several capped utterances rather than one un-embeddable block.
+        self.assertEqual(len(labelled), len(self.cues))
+        self.assertTrue(all(v == 'SPEAKER 1' for v in labelled.values()))
+        self.assertGreaterEqual(len(self.updates), 4)   # multiple capped spans
+
+    def _feed_into(self, dp, segments, total_seconds):
+        buf = np.zeros(int(total_seconds * _SR), dtype=np.float32)
+        for t0, t1, val in segments:
+            buf[int(t0 * _SR):int(t1 * _SR)] = float(val)
+        dp.on_audio(AudioChunk(samples=buf, timestamp=total_seconds))
+
     def test_disabled_when_embedder_unavailable(self):
         class Dead:
             available = False

@@ -96,6 +96,7 @@ diarize:
     cluster_threshold: 0.45    # cosine SIMILARITY below which an utterance = new speaker
     settle_seconds: 5.0        # wait this long after a span before labelling (live commits first)
     utterance_gap_seconds: 0.8 # inter-cue gap that splits one utterance from the next
+    max_utterance_seconds: 10.0 # cap span length so continuous speech is still chopped + labelled
     context_seconds: 0.25      # audio padding around each utterance slice
 
 # ── Caption processing ────────────────────────────────────────────────────────
