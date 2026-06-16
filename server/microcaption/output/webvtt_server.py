@@ -637,11 +637,20 @@ class _Handler(BaseHTTPRequestHandler):
                 except (ValueError, IndexError):
                     pass
         for d in devices:
-            if d.get('can_input'):
+            owner = in_use.get(d['index'])
+            d['session_id'] = owner
+            if not d.get('can_input'):
+                continue
+            if owner:
+                # A live session already holds this sub-device — opening it a
+                # second time to probe would contend with the capture. The
+                # session is running, so by definition it's locked.
+                d['signal_locked'] = True
+                d['mode'] = ''
+            else:
                 st = decklink_devices.device_status(d['index'])
                 d['signal_locked'] = st.get('signal_locked')
                 d['mode'] = st.get('mode', '')
-            d['session_id'] = in_use.get(d['index'])
         return {'devices': devices}
 
     def _send_log_file(self, fid: str) -> None:

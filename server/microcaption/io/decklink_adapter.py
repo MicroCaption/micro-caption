@@ -43,11 +43,15 @@ class DeckLinkAdapter(InputOutputManager):
         # Index may arrive as an sdi:// url or as a plain config device_index.
         self._index: int = self._parse_index(config)
         self._pipeline: Optional[Gst.Pipeline] = None
+        self._videosrc: Optional[Gst.Element] = None
         self._loop: Optional[GLib.MainLoop] = None
         self._thread: Optional[threading.Thread] = None
+        self._watchdog: Optional[threading.Thread] = None
         self._running = False
         self._ended = False
         self._start_time: float = 0.0
+        self._signal_locked = False
+        self._signal_timeout = float(config.get('signal_timeout_ms', 6000)) / 1000.0
 
     @classmethod
     def handles(cls, url: str) -> bool:
@@ -66,7 +70,7 @@ class DeckLinkAdapter(InputOutputManager):
     def start(self) -> None:
         print(f'[DeckLink] Opening SDI sub-device {self._index}')
         pipeline_str = (
-            f'decklinkvideosrc device-number={self._index} '
+            f'decklinkvideosrc device-number={self._index} name=vsrc '
             f'! fakesink sync=false '
             f'decklinkaudiosrc device-number={self._index} connection=embedded '
             f'! audioconvert '
@@ -77,6 +81,7 @@ class DeckLinkAdapter(InputOutputManager):
         self._pipeline = Gst.parse_launch(pipeline_str)
         sink = self._pipeline.get_by_name('sink')
         sink.connect('new-sample', self._on_new_sample)
+        self._videosrc = self._pipeline.get_by_name('vsrc')
 
         bus = self._pipeline.get_bus()
         bus.add_signal_watch()
@@ -93,6 +98,11 @@ class DeckLinkAdapter(InputOutputManager):
             target=self._loop.run, daemon=True, name='gst-decklink-loop'
         )
         self._thread.start()
+
+        self._watchdog = threading.Thread(
+            target=self._signal_watchdog, daemon=True, name='decklink-signal-wd'
+        )
+        self._watchdog.start()
 
     def stop(self) -> None:
         self._running = False
@@ -149,10 +159,43 @@ class DeckLinkAdapter(InputOutputManager):
                 target=cb, args=(reason,), daemon=True, name='decklink-end-notify',
             ).start()
 
+    def _signal_watchdog(self) -> None:
+        """Detect a missing/lost SDI signal and end the session with an error.
+
+        A no-signal DeckLink input does **not** raise — `decklinkvideosrc` keeps
+        producing filler frames and `decklinkaudiosrc` keeps producing silent
+        audio buffers (so ASR would just sit silent forever). The card exposes a
+        read-only `signal` flag; we poll it, allow `signal_timeout` to acquire
+        lock at startup, and treat a sustained loss after lock as a hard end."""
+        if self._videosrc is None:
+            return
+        deadline = time.time() + self._signal_timeout
+        while self._running:
+            try:
+                locked = bool(self._videosrc.get_property('signal'))
+            except Exception:
+                return
+            now = time.time()
+            if locked:
+                if not self._signal_locked:
+                    print(f'[DeckLink] SDI signal locked on sub-device {self._index}')
+                self._signal_locked = True
+                # Re-arm the loss deadline while signal is present.
+                deadline = now + self._signal_timeout
+            elif now >= deadline:
+                what = 'lost' if self._signal_locked else 'never acquired'
+                print(f'[DeckLink] SDI signal {what} on sub-device '
+                      f'{self._index} — ending session')
+                self._notify_end('error')
+                self.stop()
+                return
+            time.sleep(0.5)
+
     def _on_element(self, bus, message) -> None:
-        # decklinkvideosrc posts a 'no-signal' element message when the SDI
-        # input has no (or a lost) source. Treat as an error end so the session
-        # surfaces it instead of sitting silent.
+        # Some decklinkvideosrc builds post a 'no-signal' element message when
+        # the SDI input has no (or a lost) source. This box surfaces it only as
+        # a warning, so the real detection lives in _signal_watchdog; this stays
+        # as a fast path for builds that do post the message.
         s = message.get_structure()
         name = s.get_name() if s else ''
         if 'no-signal' in (name or ''):

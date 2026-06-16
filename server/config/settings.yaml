@@ -20,6 +20,10 @@ io:
     # sdi://<index>; these are the fallback/passthrough defaults.
     device_index: 0          # input sub-device (device-number) when none in URL
     input_connection: sdi    # sdi | hdmi | component
+    signal_timeout_ms: 6000  # grace to lock to an SDI signal before the session
+                             #   errors out. A no-signal input still streams silent
+                             #   audio + filler video (no element error), so we poll
+                             #   decklinkvideosrc's `signal` flag to detect it.
     output_index: 1          # Stage 3: SDI output sub-device for captioned passthrough
     profile: default         # Duo 2 duplex profile: default | one-sub-device-half |
                              #   two-sub-devices-full | two-sub-devices-half | ...

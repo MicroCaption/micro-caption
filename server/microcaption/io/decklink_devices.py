@@ -76,6 +76,14 @@ def _enumerate(klass: str) -> dict[int, dict]:
             if idx is None:
                 continue
             idx = int(idx)
+            # GStreamer suffixes the display name with the sub-device function,
+            # e.g. "DeckLink Duo (1) (Video Capture)". Strip it so the picker
+            # shows just the connector identity.
+            for suffix in (' (Video Capture)', ' (Audio Capture)',
+                           ' (Video Output)', ' (Audio Output)'):
+                if display.endswith(suffix):
+                    display = display[: -len(suffix)]
+                    break
             out.setdefault(idx, {
                 'label': display or f'DeckLink {idx}',
                 'persistent_id': _struct_get(props, 'persistent-id', None),
@@ -118,55 +126,54 @@ def list_devices() -> list[dict]:
 def _probe_signal(index: int) -> dict:
     """Briefly open the sub-device's video input to check SDI lock.
 
-    Returns {'signal_locked': bool|None, 'mode': str}. A successful preroll
-    (PAUSED reached) means the card locked to an incoming signal; a no-signal
-    element message or timeout means no lock. None = couldn't determine
-    (driver/plugin missing)."""
+    Returns {'signal_locked': bool|None, 'mode': str}. None = couldn't
+    determine (driver/plugin missing or the sub-device wouldn't open).
+
+    `decklinkvideosrc` is a **live source**: it does not preroll in PAUSED
+    (no ASYNC_DONE, no negotiated caps), and once PLAYING it keeps emitting a
+    default no-signal frame even with no cable plugged in. So buffer flow alone
+    can't tell signal from no-signal. Instead we briefly run the source in
+    PLAYING and read its read-only `signal` property ("True if there is a valid
+    input signal available"), pulling the mode label from the negotiated caps."""
     pipeline = None
     try:
         pipeline = Gst.parse_launch(
-            f'decklinkvideosrc device-number={index} ! '
+            f'decklinkvideosrc device-number={index} name=src ! '
             f'fakesink sync=false name=sink'
         )
     except Exception:
         return {'signal_locked': None, 'mode': ''}
 
+    src = pipeline.get_by_name('src')
+    sink = pipeline.get_by_name('sink')
     bus = pipeline.get_bus()
     locked: Optional[bool] = None
     mode = ''
     deadline = time.time() + _PROBE_TIMEOUT_SEC
     try:
-        pipeline.set_state(Gst.State.PAUSED)
+        if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            return {'signal_locked': None, 'mode': ''}
+        # Let the card settle (signal detection + caps negotiation), bailing
+        # early on a hard error. Drain the bus so it doesn't fill.
         while time.time() < deadline:
             msg = bus.timed_pop_filtered(
-                int(0.2 * Gst.SECOND),
-                Gst.MessageType.ERROR | Gst.MessageType.ELEMENT
-                | Gst.MessageType.ASYNC_DONE | Gst.MessageType.STATE_CHANGED,
+                int(0.1 * Gst.SECOND), Gst.MessageType.ERROR,
             )
-            if msg is None:
-                continue
-            if msg.type == Gst.MessageType.ELEMENT:
-                s = msg.get_structure()
-                name = s.get_name() if s else ''
-                if 'no-signal' in (name or ''):
-                    locked = False
-                    break
-            elif msg.type == Gst.MessageType.ERROR:
-                locked = False
+            if msg is not None:
+                return {'signal_locked': None, 'mode': ''}
+            if src.get_property('signal'):
                 break
-            elif msg.type == Gst.MessageType.ASYNC_DONE:
-                # Preroll completed → a valid input format was detected.
-                locked = True
-                # Pull the negotiated caps for the mode label.
-                sink = pipeline.get_by_name('sink')
-                pad = sink.get_static_pad('sink') if sink else None
-                caps = pad.get_current_caps() if pad else None
-                if caps and caps.get_size() > 0:
-                    st = caps.get_structure(0)
-                    w = st.get_value('width') if st.has_field('width') else '?'
-                    h = st.get_value('height') if st.has_field('height') else '?'
-                    mode = f'{w}x{h}'
-                break
+        try:
+            locked = bool(src.get_property('signal'))
+        except Exception:
+            locked = None
+        pad = sink.get_static_pad('sink') if sink else None
+        caps = pad.get_current_caps() if pad else None
+        if caps and caps.get_size() > 0:
+            st = caps.get_structure(0)
+            w = st.get_value('width') if st.has_field('width') else '?'
+            h = st.get_value('height') if st.has_field('height') else '?'
+            mode = f'{w}x{h}'
     except Exception:
         locked = None
     finally:
