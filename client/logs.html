@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MicroCaption &mdash; Logs</title>
+  <link rel="stylesheet" href="/css/shared.css">
+</head>
+<body>
+<nav>
+  <a href="/" class="nav-logo">MicroCaption</a>
+  <a href="/dashboard.html" class="nav-link">Streams</a>
+  <a href="/queue.html" class="nav-link">Queue</a>
+  <a href="/monitor.html" class="nav-link">Monitor</a>
+  <a href="/config.html" class="nav-link">Config</a>
+  <a href="/logs.html" class="nav-link active">Logs</a>
+  <a href="/logout" class="nav-link">Log out</a>
+</nav>
+<main>
+  <h2>Recent captions</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Time</th><th>Session</th><th>Caption</th></tr></thead>
+      <tbody id="logs-tbody">
+        <tr><td colspan="3" class="stub">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="margin-top:8px;font-size:.75em;color:#333">
+    <span class="stub">WebVTT download per session via the player page &mdash; SRT / PDF export Phase 2</span>
+  </p>
+  <h2 style="margin-top:20px">Packet logs</h2>
+  <div class="card"><p class="stub">Live packet log viewer — Phase 2</p></div>
+</main>
+<script src="/js/config.js"></script>
+<script>
+function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+fetch(API+'/api/sessions').then(r=>r.json()).then(sessions=>{
+  const all=[];
+  for(const s of sessions){
+    for(const c of (s.recent_cues||[])){
+      all.push({session:s.id,ts:c.ts,text:c.text});
+    }
+  }
+  all.sort((a,b)=>b.ts.localeCompare(a.ts));
+  const rows=all.slice(0,100).map(c=>
+    `<tr><td class="ts">${escH(c.ts)}</td><td class="ts">${escH(c.session)}</td><td>${escH(c.text)}</td></tr>`
+  ).join('');
+  document.getElementById('logs-tbody').innerHTML=rows||
+    '<tr><td colspan="3" class="stub">No captions yet this session.</td></tr>';
+}).catch(()=>{
+  document.getElementById('logs-tbody').innerHTML=
+    '<tr><td colspan="3" class="stub">Failed to load.</td></tr>';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MicroCaption &mdash; Standards</title>
+  <link rel="stylesheet" href="/css/shared.css">
+  <link rel="stylesheet" href="/css/landing.css">
+</head>
+<body>
+<nav class="pub-nav">
+  <a href="/" class="nav-logo">MicroCaption</a>
+  <a href="/pricing.html" class="nav-link">Pricing</a>
+  <a href="/standards.html" class="nav-link active">Standards</a>
+  <a href="/watch.html" class="nav-link">Have a code?</a>
+  <a href="/login" class="nav-link">Log in</a>
+</nav>
+
+<main>
+  <div style="padding:60px 24px 20px">
+    <div class="hero-eyebrow">Standards &amp; compliance</div>
+    <h2 style="font-size:1.6em;color:#ccc;margin-bottom:12px;font-weight:normal">Broadcast and accessibility standards</h2>
+    <p style="color:#444;font-size:.85em;max-width:640px;line-height:1.65;margin-bottom:40px">
+      MicroCaption is built against the standards used in professional broadcast
+      and web accessibility. The table below lists each relevant specification,
+      its implementation status in the current release, and any important caveats.
+    </p>
+  </div>
+
+  <div style="max-width:860px;margin:0 auto;padding:0 24px 80px">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:32px">
+      <span class="badge badge-impl">Implemented</span>
+      <span class="badge badge-partial">Partial / conditional</span>
+      <span class="badge badge-planned">Planned</span>
+    </div>
+
+    <div class="card">
+      <div class="standard-block">
+        <div class="standard-header">
+          <span class="standard-name">CEA-608-E / EIA-608 &mdash; Line 21 Closed Captioning</span>
+          <span class="badge badge-impl">Implemented</span>
+        </div>
+        <div class="standard-body">
+          The original analogue closed-captioning standard, carried as Line 21 VBI data in
+          NTSC broadcasts. MicroCaption generates byte-accurate CEA-608 character pairs with
+          correct odd parity, roll-up channel assignments, and null-pair padding to the
+          29.97 fps frame rate. Output is suitable for insertion into SDI ancillary data
+          (VANC line 21 emulation) or multiplexing into MPEG-2 user data.
+        </div>
+      </div>
+
+      <div class="standard-block">
+        <div class="standard-header">
+          <span class="standard-name">CTA-708-E / CEA-708 &mdash; Digital Television Closed Captioning</span>
+          <span class="badge badge-impl">Implemented</span>
+        </div>
+        <div class="standard-body">
+          The successor standard for digital (ATSC/cable) television. MicroCaption produces
+          DTVCC Transport Layer packets containing Service Block data for Service 1
+          (primary English). <code>cc_data</code> tuples are constructed per the
+          CTA-708-E spec and are ready for embedding in MPEG-2 SEI or H.264/H.265
+          user-data payloads. CEA-608 compatibility bytes are included in every packet
+          for legacy decoder fallback.
+        </div>
+      </div>
+
+      <div class="standard-block">
+        <div class="standard-header">
+          <span class="standard-name">W3C WebVTT &mdash; Web Video Text Tracks</span>
+          <span class="badge badge-impl">Implemented</span>
+        </div>
+        <div class="standard-body">
+          MicroCaption writes a live WebVTT stream for each session, delivered to browsers
+          via Server-Sent Events and available as a downloadable <code>.vtt</code> file.
+          Cue timing follows the WebVTT 1.0 W3C Recommendation. WebVTT files can be
+          attached directly to HTML5 <code>&lt;video&gt;</code> track elements or
+          ingested by most NLE and captioning workflows.
+        </div>
+      </div>
+
+      <div class="standard-block">
+        <div class="standard-header">
+          <span class="standard-name">FCC 47 CFR Part 79 &mdash; Closed Captioning of Video Programming</span>
+          <span class="badge badge-partial">Partial</span>
+        </div>
+        <div class="standard-body">
+          Part 79 requires video programming distributors to pass through closed captions
+          and sets quality standards (accuracy, synchronisation, completeness, placement).
+          MicroCaption addresses the technical packet layer (CEA-608 / CEA-708 output)
+          and targets sub-2-second caption latency. Compliance with all Part 79 quality
+          benchmarks depends on ASR accuracy for your specific programme content and
+          language, which varies. Full end-to-end compliance assessment is the
+          operator&rsquo;s responsibility.
+        </div>
+      </div>
+
+      <div class="standard-block">
+        <div class="standard-header">
+          <span class="standard-name">WCAG 2.1 SC 1.2.2 &mdash; Captions (Pre-recorded) &mdash; Level A</span>
+          <span class="badge badge-partial">Via WebVTT</span>
+        </div>
+        <div class="standard-body">
+          SC 1.2.2 requires captions for all pre-recorded audio content in synchronised
+          media. MicroCaption&rsquo;s WebVTT output can satisfy this criterion when applied
+          to recorded streams. Caption accuracy must meet the &ldquo;equivalent&rdquo;
+          threshold; post-processing review is recommended for pre-recorded content
+          where accuracy requirements are strict.
+        </div>
+      </div>
+
+      <div class="standard-block">
+        <div class="standard-header">
+          <span class="standard-name">WCAG 2.1 SC 1.2.4 &mdash; Captions (Live) &mdash; Level AA</span>
+          <span class="badge badge-impl">Implemented</span>
+        </div>
+        <div class="standard-body">
+          SC 1.2.4 requires captions for all live audio content in synchronised media.
+          This is MicroCaption&rsquo;s primary design target. Live WebVTT delivery via
+          SSE and real-time CEA-708 packet generation both address this criterion.
+          Note that WCAG acknowledges live ASR captions will not achieve the same
+          accuracy as human stenographers; the standard permits reasonable best-effort
+          for live content.
+        </div>
+      </div>
+
+      <div class="standard-block">
+        <div class="standard-header">
+          <span class="standard-name">SMPTE ST 2038 &mdash; Carriage of CEA-708 in SMPTE ST 2110</span>
+          <span class="badge badge-planned">Planned</span>
+        </div>
+        <div class="standard-body">
+          ST 2038 defines how to carry ancillary (ANC) data &mdash; including CEA-708
+          caption packets &mdash; over IP media networks conforming to SMPTE ST 2110.
+          Support for SMPTE 2110 ANC output is planned for a future phase once the
+          DeckLink SDI interface (Phase 2) is integrated.
+        </div>
+      </div>
+
+      <div class="standard-block" style="margin-bottom:0">
+        <div class="standard-header">
+          <span class="standard-name">ATSC A/72 &mdash; Captions in ATSC 3.0 (NEXTGEN TV)</span>
+          <span class="badge badge-planned">Planned</span>
+        </div>
+        <div class="standard-body">
+          A/72 defines closed-caption delivery for ATSC 3.0 broadcasts using
+          IMSC 1.1 (a profile of TTML). As ATSC 3.0 rollout continues in the US
+          and internationally, MicroCaption will add TTML/IMSC output alongside
+          the existing CEA-608/708 and WebVTT tracks.
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="landing-footer">
+  <span>&copy; MicroCaption</span>
+  <span>
+    <a href="/">Home</a>&ensp;&middot;&ensp;
+    <a href="/pricing.html">Pricing</a>&ensp;&middot;&ensp;
+    <a href="/login">Log in</a>
+  </span>
+</footer>
+</body>
+</html>

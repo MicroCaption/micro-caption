@@ -10,4 +10,4 @@ cd "$(dirname "$0")"
 export LD_LIBRARY_PATH="/usr/local/lib/ollama/cuda_v12${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PYTHONUNBUFFERED=1
 
-exec .venv/bin/python3 -u main.py "$@"
+exec ../.venv/bin/python3 -u main.py "$@"

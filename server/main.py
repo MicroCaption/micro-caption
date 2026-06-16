@@ -327,7 +327,7 @@ def main() -> None:
         )
         webvtt_server.start()
         port = webvtt_cfg.get('port', 8765)
-        print(f'[Main] Open http://localhost:{port}/ to manage caption streams')
+        print(f'[Main] API: http://localhost:{port}/ — UI: http://localhost:3000/ (run client/serve.py)')
 
     # ── Latency reporter ──────────────────────────────────────────────────────
     report_interval = cfg.get('monitor', {}).get('report_interval', 30)

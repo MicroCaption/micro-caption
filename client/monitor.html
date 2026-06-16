@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MicroCaption &mdash; Monitor</title>
+  <link rel="stylesheet" href="/css/shared.css">
+</head>
+<body>
+<nav>
+  <a href="/" class="nav-logo">MicroCaption</a>
+  <a href="/dashboard.html" class="nav-link">Streams</a>
+  <a href="/queue.html" class="nav-link">Queue</a>
+  <a href="/monitor.html" class="nav-link active">Monitor</a>
+  <a href="/config.html" class="nav-link">Config</a>
+  <a href="/logs.html" class="nav-link">Logs</a>
+  <a href="/logout" class="nav-link">Log out</a>
+</nav>
+<main>
+  <div class="grid2">
+    <div>
+      <h2>ASR Latency (aggregate)</h2>
+      <div class="card">
+        <table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><td>Mean</td><td id="lat-mean">—</td></tr>
+          <tr><td>p95</td><td id="lat-p95">—</td></tr>
+          <tr><td>Max</td><td id="lat-max">—</td></tr>
+          <tr><td>Rate</td><td id="lat-rate">—</td></tr>
+          <tr><td>Total inferences</td><td id="lat-total">—</td></tr>
+        </tbody></table>
+      </div>
+    </div>
+    <div>
+      <h2>System</h2>
+      <div class="card">
+        <div><div class="stat-label">Active streams</div><div class="stat-val" id="sys-streams">—</div></div>
+        <div style="margin-top:14px"><div class="stat-label">Total cues</div><div class="stat-val" id="sys-cues">—</div></div>
+        <div style="margin-top:14px"><div class="stat-label">GPU util</div><div class="stat-val stub">Phase 2</div></div>
+      </div>
+    </div>
+  </div>
+  <h2 style="margin-top:20px">Sessions</h2>
+  <div class="card">
+    <table><thead><tr>
+      <th>ID</th><th>Type</th><th>Status</th><th>Uptime</th><th>Cues</th><th></th>
+    </tr></thead><tbody id="sessions-tbody">
+      <tr><td colspan="6" class="stub">Loading…</td></tr>
+    </tbody></table>
+  </div>
+  <p class="ts" id="refresh-ts" style="margin-top:8px">Refreshing every 2 s…</p>
+</main>
+<script src="/js/config.js"></script>
+<script>
+function fms(v){return v==null?'—':v.toFixed(0)+' ms';}
+function fup(s){
+  if(s==null)return'—';
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=Math.floor(s%60);
+  return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0');
+}
+async function refresh(){
+  try{
+    const[m,ss]=await Promise.all([
+      fetch(API+'/api/metrics').then(r=>r.json()),
+      fetch(API+'/api/sessions').then(r=>r.json()),
+    ]);
+    const g=s=>document.getElementById(s);
+    g('lat-mean').textContent=fms(m.asr?.mean_ms);
+    g('lat-p95').textContent=fms(m.asr?.p95_ms);
+    g('lat-max').textContent=fms(m.asr?.max_ms);
+    g('lat-rate').textContent=m.asr?.rate!=null?m.asr.rate.toFixed(2)+'/s':'—';
+    g('lat-total').textContent=m.asr?.total??'—';
+    if(g('sys-streams'))g('sys-streams').textContent=m.session_count??'—';
+    if(g('sys-cues'))g('sys-cues').textContent=m.captions?.total_cues??'—';
+    const tb=g('sessions-tbody');
+    if(tb&&ss.length){
+      tb.innerHTML=ss.map(s=>`<tr>
+        <td>${s.id}</td><td>${s.source_type}</td>
+        <td style="color:${s.status==='live'?'#3a9a4a':'#555'}">${s.status}</td>
+        <td>${fup(s.uptime_s)}</td><td>${s.cue_count}</td>
+        <td><a href="/player.html?id=${s.id}" target="_blank" style="color:#3a9a4a">Watch</a></td>
+      </tr>`).join('');
+    }else if(tb){
+      tb.innerHTML='<tr><td colspan="6" class="stub">No active sessions.</td></tr>';
+    }
+    g('refresh-ts').textContent='Last update: '+new Date().toLocaleTimeString();
+  }catch(e){}
+}
+refresh();setInterval(refresh,2000);
+</script>
+</body>
+</html>
