@@ -34,6 +34,7 @@ class YouTubeAdapter(InputOutputManager):
         self._loop: Optional[GLib.MainLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._ended = False
         self._start_time: float = 0.0
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -66,7 +67,9 @@ class YouTubeAdapter(InputOutputManager):
             self._pipeline.set_state(Gst.State.NULL)
         if self._loop and self._loop.is_running():
             self._loop.quit()
-        if self._thread:
+        # Don't join from the GLib loop thread itself (EOS/error handlers run
+        # there) — that would raise "cannot join current thread".
+        if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=3.0)
 
     @property
@@ -135,13 +138,26 @@ class YouTubeAdapter(InputOutputManager):
             buf.unmap(mapinfo)
         return Gst.FlowReturn.OK
 
+    def _notify_end(self, reason: str) -> None:
+        """Fire the end callback exactly once, off the GLib loop thread."""
+        if self._ended:
+            return
+        self._ended = True
+        cb = self._end_callback
+        if cb:
+            threading.Thread(
+                target=cb, args=(reason,), daemon=True, name='yt-end-notify',
+            ).start()
+
     def _on_bus_error(self, bus, message) -> None:
         err, debug = message.parse_error()
         print(f'[YouTube] GStreamer error: {err.message}')
         if debug:
             print(f'[YouTube] Debug: {debug}')
+        self._notify_end('error')
         self.stop()
 
     def _on_eos(self, bus, message) -> None:
         print('[YouTube] Stream ended (EOS).')
+        self._notify_end('eos')
         self.stop()

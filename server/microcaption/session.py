@@ -18,7 +18,7 @@ class Session:
     recent_cues: Deque = field(default_factory=lambda: deque(maxlen=50))
     sse_clients: List = field(default_factory=list)
     sse_lock: threading.Lock = field(default_factory=threading.Lock)
-    status: str = 'starting'   # 'starting' | 'live' | 'error'
+    status: str = 'starting'   # 'starting' | 'live' | 'ended' | 'error'
     error: str = ''
     code: str = ''             # 6-digit zero-padded, assigned by WebVTTServer.register_session
 

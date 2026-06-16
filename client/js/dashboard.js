@@ -5,11 +5,18 @@ function fmtUp(s){
   return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(sc).padStart(2,'0');
 }
 
+function dotClass(status){
+  return status==='live'?'dot-live'
+    :status==='starting'?'dot-starting'
+    :status==='ended'?'dot-ended':'dot-error';
+}
+
 function cardHtml(s){
+  const ended=s.status==='ended';
   const badge=s.source_type==='youtube'
     ?'<span class="badge badge-yt">YouTube</span>'
     :'<span class="badge badge-stream">Stream</span>';
-  const dotCls=s.status==='live'?'dot-live':s.status==='starting'?'dot-starting':'dot-error';
+  const dotCls=dotClass(s.status);
   const urlD=s.url.length>64?s.url.slice(0,64)+'…':s.url;
   const cueHtml=s.last_cue
     ?`<div class="card-cue">"${escH(s.last_cue.slice(0,110)+(s.last_cue.length>110?'…':''))}"</div>`
@@ -19,14 +26,22 @@ function cardHtml(s){
   const qrSrc=s.code?'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(watchUrl)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4':'';
   const codeHtml=s.code?`<div class="card-watch-info"><span class="session-code">${escH(s.code)}</span>${qrSrc?`<img class="watch-qr" src="${qrSrc}" alt="QR">`:''}
 </div>`:'';
-  const viewerLink=s.code?`<a href="/watch-viewer?code=${encodeURIComponent(s.code)}" target="_blank" rel="noopener" class="btn-watch">&#128241;&nbsp;Viewer</a>`:'';
-  return `<div class="session-card ${escH(s.status)}" id="sess-${escH(s.id)}">
+  // Ended streams: keep the card so the caption log stays viewable, but swap
+  // the live affordances for replay/remove.
+  const stopBtn=ended
+    ?`<button class="btn-stop" title="Remove from list" onclick="stopSess('${escH(s.id)}')">&times;&nbsp;Remove</button>`
+    :`<button class="btn-stop" onclick="stopSess('${escH(s.id)}')">&#9632;</button>`;
+  const watchBtn=ended
+    ?`<a href="/player?id=${escH(s.id)}&mode=replay" target="_blank" rel="noopener" class="btn-watch">&#9198;&nbsp;Caption log</a>`
+    :`<a href="/player?id=${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>`;
+  const viewerLink=(!ended&&s.code)?`<a href="/watch-viewer?code=${encodeURIComponent(s.code)}" target="_blank" rel="noopener" class="btn-watch">&#128241;&nbsp;Viewer</a>`:'';
+  return `<div class="session-card ${escH(s.status)}" id="sess-${escH(s.id)}" data-status="${escH(s.status)}">
 <div class="card-header">
   <span class="dot ${dotCls}"></span>
   <span class="card-status">${s.status.toUpperCase()}</span>
   <span class="card-id">${escH(s.id)}</span>
   ${badge}
-  <button class="btn-stop" onclick="stopSess('${escH(s.id)}')">&#9632;</button>
+  ${stopBtn}
 </div>
 <div class="card-url">${escH(urlD)}</div>
 <div class="card-stats">${fmtUp(s.uptime_s)}&nbsp;&middot;&nbsp;${s.cue_count}&nbsp;cues</div>
@@ -35,7 +50,7 @@ ${errHtml}${cueHtml}
   ${codeHtml}
   <div style="display:flex;gap:8px;align-items:center">
     ${viewerLink}
-    <a href="/player?id=${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>
+    ${watchBtn}
   </div>
 </div>
 </div>`;
@@ -57,9 +72,21 @@ function _injectCard(grid,s){
   _cards[s.id]=card;
 }
 function _updateCard(card,s){
+  // Status changed (e.g. live → ended): re-render so the card's class, dot,
+  // and action buttons all reflect the new state.
+  if(card.dataset.status!==s.status){
+    const tmp=document.createElement('div');
+    tmp.innerHTML=cardHtml(s);
+    const fresh=tmp.firstElementChild;
+    const qrImg=fresh.querySelector('.watch-qr');
+    if(qrImg&&s.code)qrImg.src=_qrSrc(s.code);
+    card.replaceWith(fresh);
+    _cards[s.id]=fresh;
+    return;
+  }
   const dot=card.querySelector('.dot');
   const lbl=card.querySelector('.card-status');
-  const dotCls=s.status==='live'?'dot-live':s.status==='starting'?'dot-starting':'dot-error';
+  const dotCls=dotClass(s.status);
   if(dot)dot.className='dot '+dotCls;
   if(lbl)lbl.textContent=s.status.toUpperCase();
   const statsEl=card.querySelector('.card-stats');
@@ -91,6 +118,9 @@ async function refresh(){
     }
     let grid=wrap.querySelector('.sessions-grid');
     if(!grid){grid=document.createElement('div');grid.className='sessions-grid';wrap.innerHTML='';wrap.appendChild(grid);}
+    // Drop the initial "Loading…" placeholder now that we have sessions.
+    const placeholder=grid.querySelector('.empty-state');
+    if(placeholder)placeholder.remove();
     // Adopt server-rendered cards so we don't create duplicates.
     for(const s of data){
       if(!_cards[s.id]){

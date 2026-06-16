@@ -32,6 +32,7 @@ h2 {
 .dot-live    { background: #3a9a4a; animation: blink 1.4s infinite; }
 .dot-starting{ background: #9a8a2a; animation: blink 1.4s infinite; }
 .dot-error   { background: #9a3a3a; }
+.dot-ended   { background: #555; }
 .dot-idle    { background: #2a2a2a; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.45} }
 .live    { color: #3a9a4a; }
@@ -78,6 +79,7 @@ input[type=url]::placeholder { color: #2c2c2c; }
 .session-card.live     { border-left-color: #3a9a4a; }
 .session-card.starting { border-left-color: #8a7a2a; }
 .session-card.error    { border-left-color: #7a2a2a; }
+.session-card.ended    { border-left-color: #444; opacity: 0.72; }
 .card-header { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
 .card-status {
   font-size: 0.68em; letter-spacing: 0.1em; text-transform: uppercase;
@@ -86,6 +88,7 @@ input[type=url]::placeholder { color: #2c2c2c; }
 .session-card.live     .card-status { color: #3a9a4a; }
 .session-card.starting .card-status { color: #8a7a2a; }
 .session-card.error    .card-status { color: #7a2a2a; }
+.session-card.ended    .card-status { color: #666; }
 .card-id { color: #383838; font-size: 0.72em; margin-right: auto; }
 .badge {
   font-size: 0.62em; padding: 2px 7px; border-radius: 3px;

@@ -232,6 +232,22 @@ def main() -> None:
 
         caption_cb = make_caption_callback(session_id)
 
+        def _on_source_end(reason: str) -> None:
+            # The source reached end-of-stream (or errored mid-playback). Keep
+            # the session registered so its caption log stays viewable, but mark
+            # it 'ended' and release the GPU pipeline worker.
+            if sess.status == 'ended':
+                return
+            print(f'[Session] {session_id} ended ({reason})')
+            sess.status = 'ended'
+            if reason == 'error' and not sess.error:
+                sess.error = 'stream error'
+            if sess.pipeline:
+                try:
+                    sess.pipeline.stop()
+                except Exception:
+                    pass
+
         def _launch():
             try:
                 if args.mock_asr:
@@ -250,13 +266,15 @@ def main() -> None:
                 yt_cfg['url'] = url
                 adapter = YouTubeAdapter(yt_cfg)
                 adapter.set_audio_callback(pipeline.on_audio)
+                adapter.set_end_callback(_on_source_end)
 
                 sess.adapter = adapter
                 sess.pipeline = pipeline
 
                 pipeline.start()
                 adapter.start()          # blocks during yt-dlp CDN resolve
-                sess.status = 'live'
+                if sess.status != 'ended':   # a very short clip may EOS already
+                    sess.status = 'live'
 
             except Exception as exc:
                 print(f'[Session] {session_id} failed: {exc}')
