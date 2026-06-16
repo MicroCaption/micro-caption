@@ -156,6 +156,10 @@ def main() -> None:
                 sess = _sessions.get(session_id)
             if not sess:
                 return
+            # With the streaming backend, result.text is an append-only
+            # committed fragment (a few words), not a full window snapshot.
+            # The client (CaptionPacer) stitches and paces these; here we still
+            # normalize + packetize each fragment for WebVTT / CEA-608/708.
             norm = normalizer.normalize(result.text)
             if not norm.lines:
                 return

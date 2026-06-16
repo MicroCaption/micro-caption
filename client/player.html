@@ -54,7 +54,7 @@
   <div id="topbar">
     <h1>MicroCaption &mdash; Live ASR</h1>
     <div style="display:flex;gap:8px" id="topbar-actions">
-      <a href="/dashboard.html">&larr; Control room</a>
+      <a href="/dashboard">&larr; Control room</a>
       <span id="mode-btn-wrap"></span>
       <button id="stop-btn" onclick="stopSession()">&#9632; Stop</button>
     </div>
@@ -76,7 +76,7 @@
     const MODE = _params.get('mode') || 'live';
 
     if (!SESSION_ID) {
-      document.body.innerHTML = '<p style="color:#555;padding:40px;font-family:monospace">No session ID — <a href="/dashboard.html" style="color:#3a9a4a">back to dashboard</a></p>';
+      document.body.innerHTML = '<p style="color:#555;padding:40px;font-family:monospace">No session ID — <a href="/dashboard" style="color:#3a9a4a">back to dashboard</a></p>';
     }
 
     document.getElementById('webvtt-link').innerHTML =
@@ -87,7 +87,7 @@
     if (MODE === 'replay') {
       modeBtnWrap.innerHTML = `<button id="jump-live-btn" onclick="jumpToLive()">&#9197;&nbsp;Jump to live</button>`;
     } else {
-      modeBtnWrap.innerHTML = `<a href="/player.html?id=${SESSION_ID}&mode=replay">&#9198;&nbsp;From beginning</a>`;
+      modeBtnWrap.innerHTML = `<a href="/player?id=${SESSION_ID}&mode=replay">&#9198;&nbsp;From beginning</a>`;
     }
 
     // Build player iframe (resolved after fetching session info)
@@ -126,6 +126,7 @@
     }
     buildPlayer();
   </script>
+  <script src="/js/captions.js"></script>
   <script src="/js/player.js"></script>
 </body>
 </html>

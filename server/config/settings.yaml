@@ -23,8 +23,16 @@ io:
 # ── ASR engine ───────────────────────────────────────────────────────────────
 asr:
   primary: whisper    # parakeet | whisper  (switch back to parakeet once nemo_toolkit is installed)
-  chunk_duration: 2.0   # seconds per inference window
-  step_duration: 1.0    # seconds to advance window per step (overlap = chunk - step)
+  chunk_duration: 2.0   # streaming loop: VAD silence window only (no longer the inference window)
+  step_duration: 0.7    # seconds of new audio between inference steps (lower = faster commits, more GPU)
+  # Streaming (LocalAgreement-2) loop — active when the backend has word timestamps (Whisper):
+  min_chunk_duration: 0.6    # min audio buffered before the first inference
+  max_buffer_duration: 14.0  # hard cap; force-commit the tail if the buffer grows past this
+  context_duration: 2.0      # seconds of committed audio kept as left-context after trimming
+  # Accuracy-over-speed: hold the most recent N seconds back as look-ahead
+  # context and re-review the tail before releasing it for display. Higher =
+  # more accurate but more delay. 0 disables (fastest, less accurate).
+  review_delay: 2.5
   max_latency_ms: 2000  # warn if inference exceeds this
   vad_rms_threshold: 1.0e-4
   vad_hangover_frames: 2

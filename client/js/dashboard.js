@@ -15,11 +15,11 @@ function cardHtml(s){
     ?`<div class="card-cue">"${escH(s.last_cue.slice(0,110)+(s.last_cue.length>110?'…':''))}"</div>`
     :'<div class="card-cue idle">No captions yet…</div>';
   const errHtml=s.error?`<div style="color:#7a2a2a;font-size:.72em;margin-bottom:8px">${escH(s.error)}</div>`:'';
-  const watchUrl=s.code?window.location.origin+'/watch-viewer.html?code='+encodeURIComponent(s.code):'';
+  const watchUrl=s.code?window.location.origin+'/watch-viewer?code='+encodeURIComponent(s.code):'';
   const qrSrc=s.code?'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(watchUrl)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4':'';
   const codeHtml=s.code?`<div class="card-watch-info"><span class="session-code">${escH(s.code)}</span>${qrSrc?`<img class="watch-qr" src="${qrSrc}" alt="QR">`:''}
 </div>`:'';
-  const viewerLink=s.code?`<a href="/watch-viewer.html?code=${encodeURIComponent(s.code)}" target="_blank" rel="noopener" class="btn-watch">&#128241;&nbsp;Viewer</a>`:'';
+  const viewerLink=s.code?`<a href="/watch-viewer?code=${encodeURIComponent(s.code)}" target="_blank" rel="noopener" class="btn-watch">&#128241;&nbsp;Viewer</a>`:'';
   return `<div class="session-card ${escH(s.status)}" id="sess-${escH(s.id)}">
 <div class="card-header">
   <span class="dot ${dotCls}"></span>
@@ -35,7 +35,7 @@ ${errHtml}${cueHtml}
   ${codeHtml}
   <div style="display:flex;gap:8px;align-items:center">
     ${viewerLink}
-    <a href="/player.html?id=${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>
+    <a href="/player?id=${escH(s.id)}" target="_blank" rel="noopener" class="btn-watch">&#9654;&nbsp;Watch live</a>
   </div>
 </div>
 </div>`;
@@ -44,7 +44,7 @@ ${errHtml}${cueHtml}
 // Per-session card elements survive polling refreshes so QR images don't flicker.
 const _cards={};
 function _qrSrc(code){
-  const url=window.location.origin+'/watch-viewer.html?code='+encodeURIComponent(code);
+  const url=window.location.origin+'/watch-viewer?code='+encodeURIComponent(code);
   return 'https://api.qrserver.com/v1/create-qr-code/?data='+encodeURIComponent(url)+'&size=120x120&bgcolor=0f0f0f&color=cccccc&margin=4';
 }
 function _injectCard(grid,s){
@@ -136,7 +136,7 @@ if(addForm){
       const d=await r.json();
       if(d.session_id){
         inp.value='';
-        window.open('/player.html?id='+d.session_id,'_blank','noopener');
+        window.open('/player?id='+d.session_id,'_blank','noopener');
         await refresh();
       } else if(d.error){
         alert('Error: '+d.error);

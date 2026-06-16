@@ -316,7 +316,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._send_json({
             'session_id': session_id,
-            'player_url': f'/player.html?id={session_id}',
+            'player_url': f'/player?id={session_id}',
         })
 
     def _post_stop(self, session_id: str) -> None:
@@ -406,11 +406,15 @@ class _Handler(BaseHTTPRequestHandler):
         if sess.writer:
             last = sess.writer.last_cue_data()
             if last:
+                # Stitch recent fragments into a short tail so a late joiner
+                # lands on ~2 readable lines instead of a 2-word fragment.
+                tail = sess.writer.tail_text() or last['text']
                 catchup = json.dumps({
-                    'text':  last['text'],
-                    'lines': [l for l in last['text'].split('\n') if l.strip()],
+                    'text':  tail,
+                    'lines': [l for l in tail.split('\n') if l.strip()],
                     'start': f"{last['start']:.3f}",
                     'end':   f"{last['end']:.3f}",
+                    'catchup': True,
                 })
                 try:
                     self.wfile.write(f'event: cue\ndata: {catchup}\n\n'.encode())
@@ -472,7 +476,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_login(self) -> None:
         if _Handler._auth is None:
             self.send_response(302)
-            self.send_header('Location', '/dashboard.html')
+            self.send_header('Location', '/dashboard')
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
@@ -519,7 +523,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         self.send_response(302)
-        self.send_header('Location', '/dashboard.html')
+        self.send_header('Location', '/dashboard')
         self._send_cookie('mc_state', '', 0)
         self._send_cookie(
             _Handler._auth.cookie_name,

@@ -8,11 +8,11 @@
 <body>
 <nav>
   <a href="/" class="nav-logo">MicroCaption</a>
-  <a href="/dashboard.html" class="nav-link">Streams</a>
-  <a href="/queue.html" class="nav-link">Queue</a>
-  <a href="/monitor.html" class="nav-link active">Monitor</a>
-  <a href="/config.html" class="nav-link">Config</a>
-  <a href="/logs.html" class="nav-link">Logs</a>
+  <a href="/dashboard" class="nav-link">Streams</a>
+  <a href="/queue" class="nav-link">Queue</a>
+  <a href="/monitor" class="nav-link active">Monitor</a>
+  <a href="/config" class="nav-link">Config</a>
+  <a href="/logs" class="nav-link">Logs</a>
   <a href="/logout" class="nav-link">Log out</a>
 </nav>
 <main>
@@ -76,7 +76,7 @@ async function refresh(){
         <td>${s.id}</td><td>${s.source_type}</td>
         <td style="color:${s.status==='live'?'#3a9a4a':'#555'}">${s.status}</td>
         <td>${fup(s.uptime_s)}</td><td>${s.cue_count}</td>
-        <td><a href="/player.html?id=${s.id}" target="_blank" style="color:#3a9a4a">Watch</a></td>
+        <td><a href="/player?id=${s.id}" target="_blank" style="color:#3a9a4a">Watch</a></td>
       </tr>`).join('');
     }else if(tb){
       tb.innerHTML='<tr><td colspan="6" class="stub">No active sessions.</td></tr>';

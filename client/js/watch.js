@@ -1,9 +1,10 @@
-// Read watch code from query param: /watch-viewer.html?code=<code>
+// Read watch code from query param: /watch-viewer?code=<code>
+// CaptionPacer comes from captions.js (loaded first).
 const params = new URLSearchParams(window.location.search);
 const WATCH_CODE = params.get('code') || '';
 
 if (!WATCH_CODE) {
-  window.location.href = '/watch.html';
+  window.location.href = '/watch';
 }
 
 document.getElementById('code-display').textContent = 'Code: ' + WATCH_CODE;
@@ -11,53 +12,22 @@ document.getElementById('code-display').textContent = 'Code: ' + WATCH_CODE;
 const cap  = document.getElementById('viewer-captions');
 const stat = document.getElementById('viewer-status');
 
-const MAX_CHARS    = 32;
-const DWELL_MS     = 6000;
-const MIN_STABLE_MS = 1500;
+let pollTimer = null;
 
-let pendingText = '', displayedText = '', lastRenderTime = 0;
-let renderTimer = null, clearTimer = null, pollTimer = null;
-
-function splitLines(text) {
-  const words = text.trim().split(/\s+/);
-  const lines = []; let line = '';
-  for (const w of words) {
-    const c = line ? line + ' ' + w : w;
-    if (c.length <= MAX_CHARS) { line = c; } else { if (line) lines.push(line); line = w; }
-  }
-  if (line) lines.push(line);
-  return lines;
-}
-
-function doRender(text) {
+function renderLines(lines) {
   cap.innerHTML = '';
-  splitLines(text).slice(-2).forEach(l => {
-    if (!l.trim()) return;
+  (lines || []).forEach(l => {
+    if (!l || !l.trim()) return;
     const s = document.createElement('span');
-    s.className = 'caption-line'; s.textContent = l; cap.appendChild(s);
+    s.className = 'caption-line';
+    s.textContent = l;
+    cap.appendChild(s);
   });
-  displayedText = text; lastRenderTime = Date.now();
 }
 
-function tryUpdate() {
-  if (!pendingText || pendingText === displayedText) return;
-  const wait = MIN_STABLE_MS - (Date.now() - lastRenderTime);
-  if (wait <= 0) { doRender(pendingText); } else if (!renderTimer) {
-    renderTimer = setTimeout(() => { renderTimer = null; tryUpdate(); }, wait);
-  }
-}
-
-function onCue(text) {
-  if (!text.trim()) return;
-  if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
-  pendingText = text;
-  tryUpdate();
-  clearTimer = setTimeout(() => {
-    cap.innerHTML = ''; pendingText = displayedText = ''; lastRenderTime = 0;
-    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
-    clearTimer = null;
-  }, DWELL_MS);
-}
+// Caption-only viewer: pace fragments for comfortable reading. A slightly
+// longer idle hold suits the no-video viewer (more time to finish reading).
+const pacer = new CaptionPacer(renderLines, { idleClearMs: 8000 });
 
 const es = new EventSource(API + '/events/watch/' + WATCH_CODE);
 
@@ -65,7 +35,7 @@ es.addEventListener('cue', e => {
   const d = JSON.parse(e.data);
   const text = d.text || (d.lines || []).join(' ');
   stat.textContent = 'LIVE'; stat.className = 'live';
-  onCue(text);
+  pacer.push(text, parseFloat(d.start), parseFloat(d.end));
 });
 
 es.onopen = () => {

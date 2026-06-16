@@ -35,6 +35,9 @@ class WhisperBackend:
     """faster-whisper ASR backend — used as fallback when Parakeet fails."""
 
     name = 'whisper'
+    # Whisper exposes word-level timestamps, which the streaming LocalAgreement
+    # loop in ASRPipeline relies on to commit stable text and trim its buffer.
+    supports_words = True
 
     def __init__(self, config: dict) -> None:
         self._model_size: str = config.get('model', 'large-v3-turbo')
@@ -92,6 +95,36 @@ class WhisperBackend:
                 continue
             parts.append(seg.text)
         return ' '.join(parts).strip()
+
+    def transcribe_words(self, samples: np.ndarray) -> list[tuple[str, float, float]]:
+        """
+        Transcribe with word-level timestamps for the streaming pipeline.
+
+        Returns a list of (word, start, end) tuples in order. Word strings keep
+        their leading space from Whisper (e.g. ' the'); callers join them
+        directly. Applies the same no_speech / hallucination gating as
+        transcribe(), at segment granularity.
+        """
+        if self._model is None:
+            raise RuntimeError('WhisperBackend.load() has not been called')
+        segments, _ = self._model.transcribe(
+            samples,
+            language='en',
+            beam_size=1,
+            condition_on_previous_text=False,
+            no_speech_threshold=self._no_speech_threshold,
+            temperature=0,
+            word_timestamps=True,
+        )
+        words: list[tuple[str, float, float]] = []
+        for seg in segments:
+            if seg.no_speech_prob > self._no_speech_threshold:
+                continue
+            if _is_hallucination(seg.text):
+                continue
+            for w in (seg.words or []):
+                words.append((w.word, w.start, w.end))
+        return words
 
     def unload(self) -> None:
         if self._model is not None:
