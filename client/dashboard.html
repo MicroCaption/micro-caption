@@ -28,12 +28,24 @@
   </div>
   <h2 style="margin-top:24px">Add Stream</h2>
   <div class="card">
+    <div class="source-tabs">
+      <button type="button" class="source-tab active" data-src="url">URL</button>
+      <button type="button" class="source-tab" data-src="sdi">SDI</button>
+    </div>
+
     <form id="add-form" class="row">
       <input type="url" id="url-input" placeholder="YouTube, Twitch, peg.tv, or any yt-dlp URL…" required>
       <button id="add-btn" class="btn-primary" type="submit">&#9654;&nbsp;Caption</button>
     </form>
+
+    <form id="sdi-form" class="row" style="display:none">
+      <select id="sdi-input"><option value="">No DeckLink devices detected…</option></select>
+      <button id="sdi-btn" class="btn-primary" type="submit">&#9654;&nbsp;Caption</button>
+    </form>
+    <div id="sdi-strip" class="sdi-strip" style="display:none"></div>
   </div>
-  <p class="hint" style="margin-top:8px">Audio extracted server-side via yt-dlp — no third-party APIs.</p>
+  <p id="url-hint" class="hint" style="margin-top:8px">Audio extracted server-side via yt-dlp — no third-party APIs.</p>
+  <p id="sdi-hint" class="hint" style="margin-top:8px;display:none">Embedded SDI audio from the Blackmagic DeckLink — requires Desktop Video driver.</p>
 </main>
 <script src="/js/config.js"></script>
 <script src="/js/dashboard.js"></script>

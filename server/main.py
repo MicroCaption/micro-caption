@@ -120,6 +120,7 @@ def main() -> None:
     from microcaption.session import Session
     from microcaption.io.youtube_adapter import YouTubeAdapter
     from microcaption.io.stream_adapter import StreamAdapter
+    from microcaption.io.decklink_adapter import DeckLinkAdapter
     from microcaption.asr.pipeline import ASRPipeline, CaptionResult, SharedASRBackend
     from microcaption.caption.normalizer import CaptionNormalizer
     from microcaption.caption.packetizer_608 import CEA608Packetizer
@@ -221,7 +222,12 @@ def main() -> None:
         """
         session_id = uuid.uuid4().hex[:8]
         video_id = _extract_video_id(url)
-        source_type = 'youtube' if video_id else 'stream'
+        if DeckLinkAdapter.handles(url):
+            source_type = 'sdi'
+        elif video_id:
+            source_type = 'youtube'
+        else:
+            source_type = 'stream'
         print(f'[Session] Starting {session_id} — type={source_type} url={url[:80]}')
 
         writer = WebVTTWriter()
@@ -272,7 +278,12 @@ def main() -> None:
                 )
                 pipeline.set_caption_callback(caption_cb)
 
-                if StreamAdapter.handles(url):
+                if DeckLinkAdapter.handles(url):
+                    # SDI input via Blackmagic DeckLink — sdi://<sub-device>.
+                    dl_cfg = dict(cfg.get('io', {}).get('decklink', {}))
+                    dl_cfg['url'] = url
+                    adapter = DeckLinkAdapter(dl_cfg)
+                elif StreamAdapter.handles(url):
                     # Live broadcast source (rtmp/rtsp/srt): GStreamer reads it
                     # directly, no yt-dlp resolve step.
                     stream_cfg = dict(cfg.get('io', {}).get('stream', {}))

@@ -15,6 +15,8 @@ function cardHtml(s){
   const ended=s.status==='ended';
   const badge=s.source_type==='youtube'
     ?'<span class="badge badge-yt">YouTube</span>'
+    :s.source_type==='sdi'
+    ?'<span class="badge badge-sdi">SDI</span>'
     :'<span class="badge badge-stream">Stream</span>';
   const dotCls=dotClass(s.status);
   const urlD=s.url.length>64?s.url.slice(0,64)+'…':s.url;
@@ -176,5 +178,87 @@ if(addForm){
   });
 }
 
+// ── Source tabs: URL vs SDI ──────────────────────────────────────────────
+function selectSource(src){
+  document.querySelectorAll('.source-tab').forEach(t=>
+    t.classList.toggle('active',t.dataset.src===src));
+  const sdi=src==='sdi';
+  document.getElementById('add-form').style.display=sdi?'none':'flex';
+  document.getElementById('sdi-form').style.display=sdi?'flex':'none';
+  document.getElementById('sdi-strip').style.display=sdi?'flex':'none';
+  document.getElementById('url-hint').style.display=sdi?'none':'block';
+  document.getElementById('sdi-hint').style.display=sdi?'block':'none';
+  if(sdi)refreshSdi();
+}
+document.querySelectorAll('.source-tab').forEach(t=>
+  t.addEventListener('click',()=>selectSource(t.dataset.src)));
+
+// ── SDI device list + connector status strip ─────────────────────────────
+async function refreshSdi(){
+  let devices=[];
+  try{
+    const r=await fetch(API+'/api/sdi/devices');
+    const d=await r.json();
+    devices=d.devices||[];
+  }catch(e){/* leave empty */}
+
+  const sel=document.getElementById('sdi-input');
+  const inputs=devices.filter(d=>d.can_input);
+  if(!inputs.length){
+    sel.innerHTML='<option value="">No DeckLink devices detected…</option>';
+  }else{
+    const prev=sel.value;
+    sel.innerHTML=inputs.map(d=>{
+      const busy=d.session_id?' — in use':'';
+      const lock=d.signal_locked===true?' (signal)':d.signal_locked===false?' (no signal)':'';
+      return `<option value="sdi://${d.index}">SDI ${d.index} — ${escH(d.label)}${lock}${busy}</option>`;
+    }).join('');
+    if(prev)sel.value=prev;
+  }
+
+  const strip=document.getElementById('sdi-strip');
+  if(!devices.length){
+    strip.innerHTML='<span class="hint">No SDI connectors — install the Blackmagic Desktop Video driver.</span>';
+    return;
+  }
+  strip.innerHTML=devices.map(d=>{
+    let dotCls='dot-unknown',label='—';
+    if(d.session_id){dotCls='dot-busy';label='captioning';}
+    else if(d.signal_locked===true){dotCls='dot-signal';label=d.mode||'locked';}
+    else if(d.signal_locked===false){dotCls='dot-nosignal';label='no signal';}
+    const role=d.can_input&&d.can_output?'IN/OUT':d.can_output?'OUT':'IN';
+    return `<span class="sdi-conn"><span class="dot ${dotCls}"></span>`+
+      `<span class="role">SDI ${d.index} ${role}</span><span>${escH(label)}</span></span>`;
+  }).join('');
+}
+
+const sdiForm=document.getElementById('sdi-form');
+if(sdiForm){
+  sdiForm.addEventListener('submit',async e=>{
+    e.preventDefault();
+    const sel=document.getElementById('sdi-input');
+    const btn=document.getElementById('sdi-btn');
+    const url=sel.value;
+    if(!url){alert('No SDI input selected');return;}
+    btn.disabled=true; btn.textContent='Starting…';
+    try{
+      const r=await fetch(API+'/api/start',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'url='+encodeURIComponent(url),
+      });
+      const d=await r.json();
+      if(d.session_id){
+        window.open('/player?id='+d.session_id,'_blank','noopener');
+        await refresh();
+      }else if(d.error){alert('Error: '+d.error);}
+    }catch(e){alert('Request failed: '+e);}
+    finally{btn.disabled=false; btn.textContent='▶ Caption';}
+  });
+}
+
 refresh();
 setInterval(refresh,2000);
+setInterval(()=>{
+  if(document.querySelector('.source-tab.active')?.dataset.src==='sdi')refreshSdi();
+},3000);

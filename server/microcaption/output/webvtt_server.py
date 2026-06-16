@@ -231,6 +231,10 @@ class _Handler(BaseHTTPRequestHandler):
             if self._require_auth() is None: return
             self._send_json_raw(self._build_metrics_json())
 
+        elif path == '/api/sdi/devices':
+            if self._require_auth() is None: return
+            self._send_json(self._sdi_devices())
+
         elif path == '/api/config':
             if self._require_auth() is None: return
             self._send_json_raw(json.dumps(_Handler.config_snapshot, indent=2))
@@ -618,6 +622,27 @@ class _Handler(BaseHTTPRequestHandler):
         archive = [e for e in session_archive.read_index() if e.get('id') not in live_ids]
         archive.sort(key=lambda e: e.get('created_at') or 0, reverse=True)
         return {'system': system, 'live': live, 'archive': archive}
+
+    def _sdi_devices(self) -> dict:
+        """DeckLink SDI sub-devices + live signal lock for the dashboard picker.
+        Empty list until the Blackmagic Desktop Video driver is installed."""
+        from ..io import decklink_devices
+        devices = decklink_devices.list_devices()
+        # Which sub-devices are currently owned by a live SDI session.
+        in_use = {}
+        for s in list(self._session_registry.values()):
+            if getattr(s, 'source_type', '') == 'sdi' and s.status in ('starting', 'live'):
+                try:
+                    in_use[int(s.url.split('://', 1)[1])] = s.id
+                except (ValueError, IndexError):
+                    pass
+        for d in devices:
+            if d.get('can_input'):
+                st = decklink_devices.device_status(d['index'])
+                d['signal_locked'] = st.get('signal_locked')
+                d['mode'] = st.get('mode', '')
+            d['session_id'] = in_use.get(d['index'])
+        return {'devices': devices}
 
     def _send_log_file(self, fid: str) -> None:
         entry = _Handler._LOG_FILES.get(fid)

@@ -107,6 +107,30 @@ input[type=url]::placeholder { color: #2c2c2c; }
 }
 .badge-yt     { background: #141c2c; color: #3a5a9a; border: 1px solid #1e2e4a; }
 .badge-stream { background: #141e1a; color: #2a6a4a; border: 1px solid #1e3028; }
+.badge-sdi    { background: #1c1424; color: #7a5a9a; border: 1px solid #2e1e3a; }
+
+/* SDI source picker (dashboard "Add Stream") */
+.source-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.source-tab {
+  background: none; border: 1px solid #222; color: #555;
+  font-size: 0.78em; padding: 6px 16px; border-radius: 4px; cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.source-tab.active { color: #ccc; border-color: #3a5a9a; }
+#sdi-input { flex: 1; background: #0d0d0d; color: #ccc; border: 1px solid #222;
+  border-radius: 5px; padding: 10px 12px; font-size: 0.9em; }
+.sdi-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.sdi-conn {
+  display: flex; align-items: center; gap: 6px;
+  background: #0d0d0d; border: 1px solid #1c1c1c; border-radius: 4px;
+  padding: 6px 10px; font-size: 0.72em; color: #888;
+}
+.sdi-conn .role { color: #555; text-transform: uppercase; letter-spacing: .06em; font-size: .9em; }
+.sdi-conn .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-signal  { background: #3a9a4a; }
+.dot-nosignal{ background: #6a3030; }
+.dot-unknown { background: #3a3a3a; }
+.dot-busy    { background: #9a7a3a; animation: blink 1.4s infinite; }
 .card-url  { color: #444; font-size: 0.76em; margin-bottom: 7px; word-break: break-all; }
 .card-stats{ color: #333; font-size: 0.72em; margin-bottom: 10px; }
 .card-cue  { color: #555; font-size: 0.82em; font-style: italic; min-height: 2.2em; margin-bottom: 12px; }

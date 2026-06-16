@@ -16,9 +16,14 @@ io:
     # To list available devices:  pactl list sources short
     # Example:  device: alsa_input.pci-0000_00_1f.3.analog-stereo
   decklink:
-    # Populated in Phase 2 when hardware is available
-    device_index: 0
-    input_connection: sdi   # sdi | hdmi | component
+    # Blackmagic DeckLink SDI. Sessions select a sub-device via the pseudo-URL
+    # sdi://<index>; these are the fallback/passthrough defaults.
+    device_index: 0          # input sub-device (device-number) when none in URL
+    input_connection: sdi    # sdi | hdmi | component
+    output_index: 1          # Stage 3: SDI output sub-device for captioned passthrough
+    profile: default         # Duo 2 duplex profile: default | one-sub-device-half |
+                             #   two-sub-devices-full | two-sub-devices-half | ...
+    caption_delay_ms: 3000   # Stage 3: delay passthrough video to align with caption latency
 
 # ── ASR engine ───────────────────────────────────────────────────────────────
 asr:

@@ -6,6 +6,7 @@ the running index, **most recent first**. **Add a new row at the top of the tabl
 
 | # | Date | Branch | AI | Summary |
 |---|------|--------|----|---------|
+| [10](DEVLOG_SESSION10_2026-06-16_19-12.md) | 2026-06-16 | Opus 4.8 | **Pivot RTMP → SDI** (Blackmagic **DeckLink Duo 2**, already in the box). Found the card present but **Desktop Video driver not installed** (no kernel module/runtime → GStreamer enumerates zero devices); the `decklink` + `closedcaption` plugins (incl. `decklinkvideosink cc-line` VANC insert + Duo 2 duplex `profile`) are present. Shipped **Stage 1** (new `decklink_devices.py` enumeration + cached signal status, `GET /api/sdi/devices`, dashboard SDI source toggle + device picker + live connector status strip) and **Stage 2** (real `DeckLinkAdapter`: `sdi://<index>` embedded SDI audio → ASR; `main.py` dispatch; `source_type='sdi'`). 73 tests pass; degrades gracefully without the driver. **Stage 0 (driver install + reboot) is next, user-run**; Stage 3 (SDI-out passthrough + CEA-708 VANC) planned, gated on the card. |
 | [9](DEVLOG_SESSION9_2026-06-16_18-55.md) | 2026-06-16 | Opus 4.8 | **Scope pivot** to a broadcast inline pass-through captioner (RTMP/SDI **in** → caption → RTMP/SDI **out**, captions embedded) — YouTube was only ever a dev source. Mapped the gap (adapter selection was a no-op; YouTube adapter is yt-dlp+`souphttpsrc` HTTP-only; no video plane or egress; DeckLink still a stub) and agreed a staged plan A–D. Shipped **Stage A**: new `StreamAdapter` (rtmp/rtsp/srt ingest via GStreamer `uridecodebin`, no yt-dlp, dynamic-pad audio→ASR / video→fakesink) + scheme-based dispatch in `main.py`. Monitor-only; egress (Stage C) to be planned. |
 | [8](DEVLOG_SESSION8_2026-06-16_18-00.md) | 2026-06-16 | Opus 4.8 | Re-prioritized for live captioning (accuracy→readability→sync). Got **Parakeet** running in-process on Python 3.14 (uv + CMake flag + torch cu128 + vendored real cuDNN 9.19) as primary with **Whisper hot-standby auto-failover/recovery**; Phase-1 broadcast-style video↔caption sync (delay + cache-then-reveal + timeline pacer, fixed an ~8 s caption-lag calibration bug); built the **Logs** page into a Heroic-style log manager with stream-history archiving. |
 | [7](DEVLOG_SESSION7_2026-06-16_01-55.md) | 2026-06-16 | Opus 4.8 | Diagnose-and-fix: GPU-utilization chart sawtoothing with a single stream. Explained the spike cause and smoothed the chart to report honest duty cycle (Option A). (commit `c420df8`) |
@@ -24,7 +25,7 @@ the running index, **most recent first**. **Add a new row at the top of the tabl
 - **Sessions 2–3:** `YouTube-Ingest---ASR-Validation` (initially `update/youtube-asr-validation`)
 - **Session 4:** `feat/landing-page`
 - **Sessions 5–7:** `feat/make-captions-readable`
-- **Sessions 8–9:** `feat/the-forest`
+- **Sessions 8–10:** `feat/the-forest`
 
 ## Conventions
 

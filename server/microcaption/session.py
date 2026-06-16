@@ -10,7 +10,7 @@ class Session:
     id: str
     url: str
     video_id: str
-    source_type: str      # 'youtube' | 'stream'
+    source_type: str      # 'youtube' | 'stream' | 'sdi'
     start_time: float     # time.monotonic()
     writer: Any           # WebVTTWriter (per-session)
     adapter: Any = None   # YouTubeAdapter — set after CDN resolve
