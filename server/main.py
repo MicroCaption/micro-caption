@@ -175,6 +175,12 @@ def main() -> None:
             if not norm.lines:
                 return
             terminal.on_caption(result)
+            # Relay sessions: feed the committed caption text into the egress
+            # pipeline's roll-up encoder so it rides out embedded in the H.264
+            # SEI. Push the cleaned, unwrapped text — the encoder word-wraps and
+            # rolls it up itself.
+            if sess.injector is not None:
+                sess.injector.push_text(norm.raw)
             if webvtt_server:
                 webvtt_server.on_caption(
                     normalizer.to_display_string(norm),
@@ -215,20 +221,28 @@ def main() -> None:
 
     # ── Session lifecycle ─────────────────────────────────────────────────────
 
-    def start_session(url: str) -> str:
+    def start_session(url: str, dest: str = '') -> str:
         """
         Register a new session synchronously (returns session_id immediately),
         then resolve the CDN URL and start the adapter in a background thread.
+
+        If *dest* is given, this is a **relay** session: the source is ingested,
+        captioned, and re-muxed back out to *dest* (an RTMP endpoint) with the
+        captions embedded in the H.264 SEI.
         """
         session_id = uuid.uuid4().hex[:8]
+        dest = (dest or '').strip()
         video_id = _extract_video_id(url)
-        if DeckLinkAdapter.handles(url):
+        if dest:
+            source_type = 'relay'
+        elif DeckLinkAdapter.handles(url):
             source_type = 'sdi'
         elif video_id:
             source_type = 'youtube'
         else:
             source_type = 'stream'
-        print(f'[Session] Starting {session_id} — type={source_type} url={url[:80]}')
+        print(f'[Session] Starting {session_id} — type={source_type} '
+              f'url={url[:80]}' + (f' → {dest[:60]}' if dest else ''))
 
         writer = WebVTTWriter()
         sess = Session(
@@ -239,6 +253,7 @@ def main() -> None:
             start_time=time.monotonic(),
             writer=writer,
             status='starting',
+            dest=dest,
         )
 
         with _sessions_lock:
@@ -252,12 +267,17 @@ def main() -> None:
             # The source reached end-of-stream (or errored mid-playback). Keep
             # the session registered so its caption log stays viewable, but mark
             # it 'ended' and release the GPU pipeline worker.
-            if sess.status == 'ended':
+            if sess.status in ('ended', 'error'):
                 return
             print(f'[Session] {session_id} ended ({reason})')
-            sess.status = 'ended'
-            if reason == 'error' and not sess.error:
-                sess.error = 'stream error'
+            if reason == 'eos':
+                sess.status = 'ended'
+            else:
+                # Any non-EOS reason is a failure; for relay sessions the reason
+                # string is a user-facing message (e.g. an out-of-spec input).
+                sess.status = 'error'
+                if not sess.error:
+                    sess.error = reason if reason != 'error' else 'stream error'
             if sess.pipeline:
                 try:
                     sess.pipeline.stop()
@@ -278,7 +298,17 @@ def main() -> None:
                 )
                 pipeline.set_caption_callback(caption_cb)
 
-                if DeckLinkAdapter.handles(url):
+                if source_type == 'relay':
+                    # Ingest → caption → re-mux out to dest with embedded CC.
+                    # One pipeline taps audio for ASR *and* re-streams the A/V.
+                    from microcaption.io.egress import (
+                        EgressPipeline, CaptionInjector)
+                    eg_cfg = dict(cfg.get('io', {}).get('egress', {}))
+                    injector = CaptionInjector(
+                        cfg.get('caption', {}).get('packetizer', {}))
+                    sess.injector = injector
+                    adapter = EgressPipeline(url, dest, eg_cfg, injector=injector)
+                elif DeckLinkAdapter.handles(url):
                     # SDI input via Blackmagic DeckLink — sdi://<sub-device>.
                     dl_cfg = dict(cfg.get('io', {}).get('decklink', {}))
                     dl_cfg['url'] = url

@@ -55,3 +55,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+# mediamtx auto-generated TLS certs (when run from server/)
+server/auto.crt
+server/auto.key
+/auto.crt
+/auto.key
