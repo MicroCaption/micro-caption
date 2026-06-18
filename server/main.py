@@ -155,6 +155,23 @@ def main() -> None:
         shared_backend = SharedASRBackend(cfg.get('asr', {}))
         shared_backend.load()
 
+    # ── Shared non-speech sound-event tagger (WCAG 2.1 AA) ────────────────────
+    # AudioSet tagger, loaded once and shared by all sessions. Runs in parallel
+    # with ASR to caption [APPLAUSE], [MUSIC], etc. Failure here must never block
+    # captioning, so a load error just disables the feature.
+    ae_cfg = cfg.get('audio_events', {})
+    shared_tagger = None
+    if not args.mock_asr and ae_cfg.get('enabled', False):
+        try:
+            from microcaption.audio_events.ast_backend import ASTTagger
+            from microcaption.audio_events import labels as ae_labels
+            shared_tagger = ASTTagger(ae_cfg)
+            shared_tagger.load()
+            ae_labels.resolve_against(shared_tagger.id2label)
+        except Exception as exc:
+            print(f'[AudioEvents] disabled — tagger failed to load: {exc}')
+            shared_tagger = None
+
     # ── Session registry ──────────────────────────────────────────────────────
     _sessions: dict = {}          # session_id → Session
     _sessions_lock = threading.Lock()
@@ -278,6 +295,11 @@ def main() -> None:
                 sess.status = 'error'
                 if not sess.error:
                     sess.error = reason if reason != 'error' else 'stream error'
+            if sess.sed:
+                try:
+                    sess.sed.stop()
+                except Exception:
+                    pass
             if sess.pipeline:
                 try:
                     sess.pipeline.stop()
@@ -297,6 +319,17 @@ def main() -> None:
                     worker_name=f'asr-{session_id}',
                 )
                 pipeline.set_caption_callback(caption_cb)
+
+                # Parallel non-speech sound captioner — taps the same audio and
+                # emits bracketed captions through the same callback as ASR.
+                sed = None
+                if shared_tagger is not None:
+                    from microcaption.audio_events.detector import (
+                        SoundEventDetector)
+                    sed = SoundEventDetector(
+                        ae_cfg, shared_tagger, worker_name=f'sed-{session_id}')
+                    sed.set_caption_callback(caption_cb)
+                    sess.sed = sed
 
                 if source_type == 'relay':
                     # Ingest → caption → re-mux out to dest with embedded CC.
@@ -323,13 +356,22 @@ def main() -> None:
                     yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
                     yt_cfg['url'] = url
                     adapter = YouTubeAdapter(yt_cfg)
-                adapter.set_audio_callback(pipeline.on_audio)
+                # Fan audio out to ASR and (if enabled) the sound-event detector.
+                if sed is not None:
+                    def _audio_fanout(chunk, _p=pipeline, _s=sed):
+                        _p.on_audio(chunk)
+                        _s.on_audio(chunk)
+                    adapter.set_audio_callback(_audio_fanout)
+                else:
+                    adapter.set_audio_callback(pipeline.on_audio)
                 adapter.set_end_callback(_on_source_end)
 
                 sess.adapter = adapter
                 sess.pipeline = pipeline
 
                 pipeline.start()
+                if sed is not None:
+                    sed.start()
                 adapter.start()          # blocks during yt-dlp CDN resolve
                 if sess.status != 'ended':   # a very short clip may EOS already
                     sess.status = 'live'
@@ -360,6 +402,11 @@ def main() -> None:
         if sess.adapter:
             try:
                 sess.adapter.stop()
+            except Exception:
+                pass
+        if sess.sed:
+            try:
+                sess.sed.stop()
             except Exception:
                 pass
         if sess.pipeline:
@@ -457,6 +504,8 @@ def main() -> None:
 
     if shared_backend:
         shared_backend.unload()
+    if shared_tagger:
+        shared_tagger.unload()
     if webvtt_server:
         webvtt_server.stop()
     pkt_logger.close()

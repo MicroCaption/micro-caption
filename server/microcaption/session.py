@@ -15,6 +15,7 @@ class Session:
     writer: Any           # WebVTTWriter (per-session)
     adapter: Any = None   # input adapter / EgressPipeline — set after start
     pipeline: Any = None  # ASRPipeline — set after backend starts
+    sed: Any = None       # SoundEventDetector — non-speech audio captioner (optional)
     injector: Any = None  # CaptionInjector — set for 'relay' (RTMP egress) sessions
     dest: str = ''        # egress RTMP destination (relay sessions only)
     recent_cues: Deque = field(default_factory=lambda: deque(maxlen=50))
