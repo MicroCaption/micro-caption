@@ -1,0 +1,13 @@
+# Minimal mediamtx config for the MicroCaption relay captioner.
+# Accepts an RTMP push (OBS / hardware encoder) on any path and lets us pull the
+# local republish. Only RTMP is needed; the rest stay at their defaults.
+#
+# Run:  server/vendor/mediamtx/mediamtx server/scratch/mediamtx.yml
+rtsp: no
+hls: no
+webrtc: no
+srt: no
+api: no
+metrics: no
+paths:
+  all_others:

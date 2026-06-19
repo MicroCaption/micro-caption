@@ -2,3 +2,6 @@
 cudnn/
 !fetch_cudnn.sh
 !.gitignore
+
+# mediamtx RTMP server binary (fetched out-of-band — see scratch/fetch_mediamtx.sh)
+mediamtx/

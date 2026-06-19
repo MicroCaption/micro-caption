@@ -153,3 +153,35 @@ input[type=url]::placeholder { color: #2c2c2c; }
 .session-code { font-size:1.5em; letter-spacing:.2em; color:#ccc; font-family:monospace; display:block; margin-bottom:6px; }
 .watch-qr { width:88px; height:88px; border-radius:4px; display:block; }
 .card-watch-info { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+
+/* ── Relay → YouTube panel ──────────────────────────────────────────── */
+.relay-intro { color: #aaa; font-size: 0.82em; line-height: 1.5; margin: 4px 0 16px; }
+.relay-steps { list-style: none; counter-reset: relay; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 18px; }
+.relay-steps > li { counter-increment: relay; position: relative; padding-left: 34px; }
+.relay-steps > li::before { content: counter(relay); position: absolute; left: 0; top: 0;
+  width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 50%;
+  background: #141e1a; border: 1px solid #2a7a3a; color: #4caa5a; font-size: 0.8em; }
+.relay-step-h { color: #ddd; font-size: 0.9em; font-weight: bold; margin-bottom: 4px; }
+.relay-step-b { color: #999; font-size: 0.8em; line-height: 1.5; }
+.relay-step-b em, .relay-intro em { color: #cfcfcf; font-style: normal; }
+.relay-kv { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 2px; }
+.relay-row { display: flex; align-items: center; gap: 8px; }
+.relay-k { color: #777; font-size: 0.75em; width: 78px; flex: none; }
+.relay-row code { flex: 1; background: #0d0d0d; border: 1px solid #242424; border-radius: 4px;
+  padding: 7px 10px; color: #6caa7a; font-size: 0.82em; overflow-x: auto; white-space: nowrap; }
+.relay-copy { background: #141414; border: 1px solid #242424; color: #999; border-radius: 4px;
+  padding: 6px 12px; font-family: monospace; font-size: 0.75em; cursor: pointer; flex: none; }
+.relay-copy:hover { color: #ddd; border-color: #2a7a3a; }
+.relay-fields { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; max-width: 480px; }
+.relay-label { display: flex; flex-direction: column; gap: 4px; color: #888; font-size: 0.75em; }
+.relay-label input { background: #141414; border: 1px solid #242424; border-radius: 4px;
+  padding: 9px 12px; color: #ddd; font-family: monospace; font-size: 0.85em; }
+.relay-label input:focus { outline: none; border-color: #2a7a3a; }
+.relay-fields .btn-primary { align-self: flex-start; margin-top: 4px; }
+#relay-lan-hint:not(:empty) { color: #9a8a2a; font-size: 0.72em; margin-top: 6px; display: block; }
+.relay-spec { background: #181405; border: 1px solid #3a2e0a; color: #c9a93a;
+  border-radius: 4px; padding: 9px 12px; font-size: 0.78em; line-height: 1.45;
+  margin: 0 0 16px; }
+.relay-spec strong { color: #e0c25a; }
+.relay-spec em { color: #cfcfcf; font-style: normal; }

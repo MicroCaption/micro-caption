@@ -155,6 +155,23 @@ def main() -> None:
         shared_backend = SharedASRBackend(cfg.get('asr', {}))
         shared_backend.load()
 
+    # ── Shared non-speech sound-event tagger (WCAG 2.1 AA) ────────────────────
+    # AudioSet tagger, loaded once and shared by all sessions. Runs in parallel
+    # with ASR to caption [APPLAUSE], [MUSIC], etc. Failure here must never block
+    # captioning, so a load error just disables the feature.
+    ae_cfg = cfg.get('audio_events', {})
+    shared_tagger = None
+    if not args.mock_asr and ae_cfg.get('enabled', False):
+        try:
+            from microcaption.audio_events.ast_backend import ASTTagger
+            from microcaption.audio_events import labels as ae_labels
+            shared_tagger = ASTTagger(ae_cfg)
+            shared_tagger.load()
+            ae_labels.resolve_against(shared_tagger.id2label)
+        except Exception as exc:
+            print(f'[AudioEvents] disabled — tagger failed to load: {exc}')
+            shared_tagger = None
+
     # ── Session registry ──────────────────────────────────────────────────────
     _sessions: dict = {}          # session_id → Session
     _sessions_lock = threading.Lock()
@@ -175,6 +192,12 @@ def main() -> None:
             if not norm.lines:
                 return
             terminal.on_caption(result)
+            # Relay sessions: feed the committed caption text into the egress
+            # pipeline's roll-up encoder so it rides out embedded in the H.264
+            # SEI. Push the cleaned, unwrapped text — the encoder word-wraps and
+            # rolls it up itself.
+            if sess.injector is not None:
+                sess.injector.push_text(norm.raw)
             if webvtt_server:
                 webvtt_server.on_caption(
                     normalizer.to_display_string(norm),
@@ -215,20 +238,28 @@ def main() -> None:
 
     # ── Session lifecycle ─────────────────────────────────────────────────────
 
-    def start_session(url: str) -> str:
+    def start_session(url: str, dest: str = '') -> str:
         """
         Register a new session synchronously (returns session_id immediately),
         then resolve the CDN URL and start the adapter in a background thread.
+
+        If *dest* is given, this is a **relay** session: the source is ingested,
+        captioned, and re-muxed back out to *dest* (an RTMP endpoint) with the
+        captions embedded in the H.264 SEI.
         """
         session_id = uuid.uuid4().hex[:8]
+        dest = (dest or '').strip()
         video_id = _extract_video_id(url)
-        if DeckLinkAdapter.handles(url):
+        if dest:
+            source_type = 'relay'
+        elif DeckLinkAdapter.handles(url):
             source_type = 'sdi'
         elif video_id:
             source_type = 'youtube'
         else:
             source_type = 'stream'
-        print(f'[Session] Starting {session_id} — type={source_type} url={url[:80]}')
+        print(f'[Session] Starting {session_id} — type={source_type} '
+              f'url={url[:80]}' + (f' → {dest[:60]}' if dest else ''))
 
         writer = WebVTTWriter()
         sess = Session(
@@ -239,6 +270,7 @@ def main() -> None:
             start_time=time.monotonic(),
             writer=writer,
             status='starting',
+            dest=dest,
         )
 
         with _sessions_lock:
@@ -252,12 +284,22 @@ def main() -> None:
             # The source reached end-of-stream (or errored mid-playback). Keep
             # the session registered so its caption log stays viewable, but mark
             # it 'ended' and release the GPU pipeline worker.
-            if sess.status == 'ended':
+            if sess.status in ('ended', 'error'):
                 return
             print(f'[Session] {session_id} ended ({reason})')
-            sess.status = 'ended'
-            if reason == 'error' and not sess.error:
-                sess.error = 'stream error'
+            if reason == 'eos':
+                sess.status = 'ended'
+            else:
+                # Any non-EOS reason is a failure; for relay sessions the reason
+                # string is a user-facing message (e.g. an out-of-spec input).
+                sess.status = 'error'
+                if not sess.error:
+                    sess.error = reason if reason != 'error' else 'stream error'
+            if sess.sed:
+                try:
+                    sess.sed.stop()
+                except Exception:
+                    pass
             if sess.pipeline:
                 try:
                     sess.pipeline.stop()
@@ -278,7 +320,28 @@ def main() -> None:
                 )
                 pipeline.set_caption_callback(caption_cb)
 
-                if DeckLinkAdapter.handles(url):
+                # Parallel non-speech sound captioner — taps the same audio and
+                # emits bracketed captions through the same callback as ASR.
+                sed = None
+                if shared_tagger is not None:
+                    from microcaption.audio_events.detector import (
+                        SoundEventDetector)
+                    sed = SoundEventDetector(
+                        ae_cfg, shared_tagger, worker_name=f'sed-{session_id}')
+                    sed.set_caption_callback(caption_cb)
+                    sess.sed = sed
+
+                if source_type == 'relay':
+                    # Ingest → caption → re-mux out to dest with embedded CC.
+                    # One pipeline taps audio for ASR *and* re-streams the A/V.
+                    from microcaption.io.egress import (
+                        EgressPipeline, CaptionInjector)
+                    eg_cfg = dict(cfg.get('io', {}).get('egress', {}))
+                    injector = CaptionInjector(
+                        cfg.get('caption', {}).get('packetizer', {}))
+                    sess.injector = injector
+                    adapter = EgressPipeline(url, dest, eg_cfg, injector=injector)
+                elif DeckLinkAdapter.handles(url):
                     # SDI input via Blackmagic DeckLink — sdi://<sub-device>.
                     dl_cfg = dict(cfg.get('io', {}).get('decklink', {}))
                     dl_cfg['url'] = url
@@ -293,13 +356,22 @@ def main() -> None:
                     yt_cfg = dict(cfg.get('io', {}).get('youtube', {}))
                     yt_cfg['url'] = url
                     adapter = YouTubeAdapter(yt_cfg)
-                adapter.set_audio_callback(pipeline.on_audio)
+                # Fan audio out to ASR and (if enabled) the sound-event detector.
+                if sed is not None:
+                    def _audio_fanout(chunk, _p=pipeline, _s=sed):
+                        _p.on_audio(chunk)
+                        _s.on_audio(chunk)
+                    adapter.set_audio_callback(_audio_fanout)
+                else:
+                    adapter.set_audio_callback(pipeline.on_audio)
                 adapter.set_end_callback(_on_source_end)
 
                 sess.adapter = adapter
                 sess.pipeline = pipeline
 
                 pipeline.start()
+                if sed is not None:
+                    sed.start()
                 adapter.start()          # blocks during yt-dlp CDN resolve
                 if sess.status != 'ended':   # a very short clip may EOS already
                     sess.status = 'live'
@@ -330,6 +402,11 @@ def main() -> None:
         if sess.adapter:
             try:
                 sess.adapter.stop()
+            except Exception:
+                pass
+        if sess.sed:
+            try:
+                sess.sed.stop()
             except Exception:
                 pass
         if sess.pipeline:
@@ -427,6 +504,8 @@ def main() -> None:
 
     if shared_backend:
         shared_backend.unload()
+    if shared_tagger:
+        shared_tagger.unload()
     if webvtt_server:
         webvtt_server.stop()
     pkt_logger.close()

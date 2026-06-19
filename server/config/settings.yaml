@@ -28,6 +28,28 @@ io:
     profile: default         # Duo 2 duplex profile: default | one-sub-device-half |
                              #   two-sub-devices-full | two-sub-devices-half | ...
     caption_delay_ms: 3000   # Stage 3: delay passthrough video to align with caption latency
+  egress:
+    # RTMP relay captioner: ingest an A/V source, caption it, and re-mux back
+    # out to `dest` with captions embedded in the H.264 SEI (the form YouTube
+    # Live reads). Encoder is x264enc (CPU) so NVENC/CUDA stay free for ASR.
+    fps: 30                  # output framerate; caption cadence is one 608 pair/frame
+    caption_delay_ms: 4500   # hold A/V back ~ASR latency so captions align with the picture
+                             #   (raised from 2500: ASR commits ~4-5s after audio via
+                             #   asr.review_delay 4.0 + inference, so 2500 left captions ~2s late)
+    bitrate: 6800            # x264 target kbps — set to match your encoder's video
+                             #   bitrate so the re-encode doesn't degrade quality
+    audio_bitrate: 192000    # AAC bitrate (bits/s); keeps audio near-transparent
+    x264_speed_preset: veryfast   # quality/speed balance (OBS's own default). Real-time
+                                  #   at 1080p on this CPU. Use superfast/ultrafast only
+                                  #   if you see "reader too slow"; faster/fast for more quality.
+    # Input spec limits — CPU re-encode is only real-time-safe up to ~1080p60.
+    # Streams above this are rejected with a message shown on the dashboard.
+    max_width: 1920
+    max_height: 1080
+    max_fps: 60
+    # Where an encoder/OBS pushes so we can ingest it. Receiving a *push* needs a
+    # small RTMP server (mediamtx) in front; we pull its local republish below.
+    ingest_url: rtmp://localhost:1935/live/stream
 
 # ── ASR engine ───────────────────────────────────────────────────────────────
 asr:
@@ -58,6 +80,25 @@ asr:
     model: large-v3-turbo   # swap to base.en for faster first-run download (~145 MB vs 1.6 GB)
     device: cuda
     compute_type: float16   # float16 | int8 | int8_float16
+
+# ── Non-speech sound captioning (WCAG 2.1 AA) ──────────────────────────────────
+# A parallel AudioSet tagger captions meaningful non-speech audio that ASR can't:
+# [APPLAUSE], [MUSIC], [LAUGHTER], [EXPLOSION], ... One fixed 527-class model
+# (the universal sound taxonomy) covers every event type — no per-event config.
+audio_events:
+  enabled: true
+  model: MIT/ast-finetuned-audioset-10-10-0.4593   # AST AudioSet classifier (527 classes)
+  device: cuda            # shares the GPU with ASR; set 'cpu' to keep the GPU free
+  window_sec: 2.0         # audio window classified each step
+  hop_sec: 1.0            # seconds of new audio between classifications
+  on_threshold: 0.45      # sigmoid prob to consider a class present
+  off_threshold: 0.25     # prob below which an active event starts clearing (hysteresis)
+  min_hot_windows: 1      # consecutive windows above on_threshold before firing
+  clear_windows: 2        # consecutive below-off windows before an event can re-fire
+  cooldown_sec: 8.0       # min seconds before the same caption can repeat
+  speech_gate: 0.5        # if a Speech class >= this, suppress non-speech captions
+                          #   (except background music/applause) — dialogue is ASR's job
+  max_captions_per_window: 1   # emit only the top event per window to avoid clutter
 
 # ── Broadcast-style sync (Phase 1) ─────────────────────────────────────────────
 # The viewer holds the video a fixed delay behind live so captions (which lag the

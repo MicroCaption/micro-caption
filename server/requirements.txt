@@ -15,6 +15,10 @@ nemo_toolkit[asr]
 # ASR — fallback (ctranslate2 may need a cp314 wheel; install separately if this fails)
 faster-whisper
 
+# Non-speech sound captioning — AudioSet tagger (AST). Already pulled in by NeMo,
+# but used directly here (transformers audio-classification; no torchaudio needed).
+transformers
+
 # Config
 pyyaml>=6.0
 

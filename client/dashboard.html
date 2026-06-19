@@ -31,6 +31,7 @@
     <div class="source-tabs">
       <button type="button" class="source-tab active" data-src="url">URL</button>
       <button type="button" class="source-tab" data-src="sdi">SDI</button>
+      <button type="button" class="source-tab" data-src="relay">Relay &#8594; YouTube</button>
     </div>
 
     <form id="add-form" class="row">
@@ -43,6 +44,43 @@
       <button id="sdi-btn" class="btn-primary" type="submit">&#9654;&nbsp;Caption</button>
     </form>
     <div id="sdi-strip" class="sdi-strip" style="display:none"></div>
+
+    <div id="relay-panel" style="display:none">
+      <p class="relay-intro">Bring a live RTMP feed in from OBS or a hardware encoder; we caption it with live ASR and re-stream A/V to YouTube with <strong>closed captions embedded</strong> (CEA-608/708). Captions are closed — viewers toggle them with the <em>CC</em> button.</p>
+      <div class="relay-spec">⚠ Input limit: <strong>1080p60 max</strong> (1920×1080, up to 60&nbsp;fps). Set your encoder's <em>Output (Scaled) Resolution</em> to 1920×1080 or lower — higher streams are rejected so the real-time re-encode keeps up.</div>
+      <ol class="relay-steps">
+        <li>
+          <div class="relay-step-h">Point OBS / your encoder at MicroCaption</div>
+          <div class="relay-step-b">In OBS → <em>Settings → Stream</em>, set <em>Service: Custom</em>, then:</div>
+          <div class="relay-kv">
+            <div class="relay-row"><span class="relay-k">Server</span>
+              <code id="relay-ingest-server">rtmp://…:1935/live</code>
+              <button type="button" class="relay-copy" data-copy="relay-ingest-server">Copy</button></div>
+            <div class="relay-row"><span class="relay-k">Stream Key</span>
+              <code id="relay-ingest-key">stream</code>
+              <button type="button" class="relay-copy" data-copy="relay-ingest-key">Copy</button></div>
+          </div>
+          <div class="hint" id="relay-lan-hint"></div>
+        </li>
+        <li>
+          <div class="relay-step-h">Paste your YouTube destination</div>
+          <div class="relay-step-b">From YouTube Studio → <em>Go Live → Stream</em>, copy the Stream URL and Stream key:</div>
+          <form id="relay-form" class="relay-fields">
+            <label class="relay-label">YouTube stream URL
+              <input type="text" id="relay-yt-url" value="rtmp://a.rtmp.youtube.com/live2" required>
+            </label>
+            <label class="relay-label">YouTube stream key
+              <input type="text" id="relay-yt-key" placeholder="xxxx-xxxx-xxxx-xxxx" required>
+            </label>
+            <button id="relay-btn" class="btn-primary" type="submit">&#9654;&nbsp;Start relay</button>
+          </form>
+        </li>
+        <li>
+          <div class="relay-step-h">Go live</div>
+          <div class="relay-step-b">Start streaming in OBS <strong>first</strong>, then click <em>Start relay</em>. Allow a few seconds for YouTube to detect the captions, then turn on <em>CC</em> on the watch page. A/V is held back ~2.5&nbsp;s so captions line up with the picture.</div>
+        </li>
+      </ol>
+    </div>
   </div>
   <p id="url-hint" class="hint" style="margin-top:8px">Audio extracted server-side via yt-dlp — no third-party APIs.</p>
   <p id="sdi-hint" class="hint" style="margin-top:8px;display:none">Embedded SDI audio from the Blackmagic DeckLink — requires Desktop Video driver.</p>

@@ -178,20 +178,118 @@ if(addForm){
   });
 }
 
-// ── Source tabs: URL vs SDI ──────────────────────────────────────────────
+// ── Source tabs: URL / SDI / Relay ───────────────────────────────────────
 function selectSource(src){
   document.querySelectorAll('.source-tab').forEach(t=>
     t.classList.toggle('active',t.dataset.src===src));
-  const sdi=src==='sdi';
-  document.getElementById('add-form').style.display=sdi?'none':'flex';
-  document.getElementById('sdi-form').style.display=sdi?'flex':'none';
-  document.getElementById('sdi-strip').style.display=sdi?'flex':'none';
-  document.getElementById('url-hint').style.display=sdi?'none':'block';
-  document.getElementById('sdi-hint').style.display=sdi?'block':'none';
-  if(sdi)refreshSdi();
+  const show=(id,on,disp)=>{const el=document.getElementById(id);if(el)el.style.display=on?(disp||'block'):'none';};
+  show('add-form',   src==='url',  'flex');
+  show('url-hint',   src==='url');
+  show('sdi-form',   src==='sdi',  'flex');
+  show('sdi-strip',  src==='sdi',  'flex');
+  show('sdi-hint',   src==='sdi');
+  show('relay-panel', src==='relay');
+  if(src==='sdi')refreshSdi();
+  if(src==='relay')prepareRelay();
 }
 document.querySelectorAll('.source-tab').forEach(t=>
   t.addEventListener('click',()=>selectSource(t.dataset.src)));
+
+// The localhost URL the SERVER pulls from (its local mediamtx republish).
+let _relaySource='rtmp://localhost:1935/live/stream';
+
+// Derive the encoder-facing push endpoint (server URL + key) from the
+// configured ingest path, but with the host the operator is browsing on so it
+// works from another machine on the LAN.
+function _ingestEndpoint(ingestUrl){
+  const m=ingestUrl.match(/^(rtmps?:\/\/)([^/]+)(\/.*)$/);
+  const proto=m?m[1]:'rtmp://';
+  const port=(m&&m[2].split(':')[1])||'1935';
+  const path=m?m[3]:'/live/stream';
+  const host=location.hostname||'localhost';
+  const full=`${proto}${host}:${port}${path}`;
+  const i=full.lastIndexOf('/');
+  return {server:full.slice(0,i), key:full.slice(i+1)};
+}
+
+let _relayPrepared=false;
+async function prepareRelay(){
+  if(_relayPrepared)return;
+  try{
+    const r=await fetch(API+'/api/config');
+    const c=await r.json();
+    if(c?.io?.egress?.ingest_url)_relaySource=c.io.egress.ingest_url;
+  }catch(e){/* keep default */}
+  const ep=_ingestEndpoint(_relaySource);
+  const setT=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+  setT('relay-ingest-server',ep.server);
+  setT('relay-ingest-key',ep.key);
+  const lan=document.getElementById('relay-lan-hint');
+  if(lan){
+    lan.textContent=(location.hostname==='localhost'||location.hostname==='127.0.0.1')
+      ? 'If OBS runs on another computer, replace “localhost” with this machine’s LAN IP.'
+      : '';
+  }
+  _relayPrepared=true;
+}
+
+// Copy buttons for the ingest server/key.
+document.querySelectorAll('.relay-copy').forEach(btn=>{
+  btn.addEventListener('click',async()=>{
+    const el=document.getElementById(btn.dataset.copy);
+    if(!el)return;
+    try{await navigator.clipboard.writeText(el.textContent.trim());
+      const o=btn.textContent; btn.textContent='Copied'; setTimeout(()=>btn.textContent=o,1200);
+    }catch(e){/* clipboard blocked */}
+  });
+});
+
+const relayForm=document.getElementById('relay-form');
+if(relayForm){
+  relayForm.addEventListener('submit',async e=>{
+    e.preventDefault();
+    let ytUrl=document.getElementById('relay-yt-url').value.trim().replace(/\/+$/,'');
+    const ytKey=document.getElementById('relay-yt-key').value.trim();
+    const btn=document.getElementById('relay-btn');
+    if(!ytUrl||!ytKey){alert('Enter your YouTube stream URL and key');return;}
+    const dest=ytUrl+'/'+ytKey;
+    btn.disabled=true; btn.textContent='Starting…';
+    try{
+      const r=await fetch(API+'/api/start',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'url='+encodeURIComponent(_relaySource)+'&dest='+encodeURIComponent(dest),
+      });
+      const d=await r.json();
+      if(d.session_id){
+        await refresh();
+        // Watch the new session briefly: a rejected/out-of-spec input fails
+        // within a second or two — surface that right here instead of only on
+        // the card. Only open the player once it's actually running.
+        const ok=await watchRelayStart(d.session_id);
+        if(ok)window.open('/player?id='+d.session_id,'_blank','noopener');
+      }else if(d.error){alert('Error: '+d.error);}
+    }catch(e){alert('Request failed: '+e);}
+    finally{btn.disabled=false; btn.textContent='▶ Start relay';}
+  });
+}
+
+// Poll a freshly-started relay session for ~8s. Alerts (and returns false) if it
+// errors; returns true once it's live and producing captions.
+async function watchRelayStart(id){
+  for(let i=0;i<8;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    try{
+      const r=await fetch(API+'/api/sessions');
+      const list=await r.json();
+      const s=(Array.isArray(list)?list:[]).find(x=>x.id===id);
+      if(!s)continue;
+      if(s.status==='error'){alert('Relay could not start:\n\n'+(s.error||'stream error')); return false;}
+      if(s.status==='live'&&s.cue_count>0)return true;   // captioning
+    }catch(e){/* keep trying */}
+  }
+  return true;   // assume ok (still connecting); the card shows live state
+}
 
 // ── SDI device list + connector status strip ─────────────────────────────
 async function refreshSdi(){

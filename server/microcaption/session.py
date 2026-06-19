@@ -10,11 +10,14 @@ class Session:
     id: str
     url: str
     video_id: str
-    source_type: str      # 'youtube' | 'stream' | 'sdi'
+    source_type: str      # 'youtube' | 'stream' | 'sdi' | 'relay'
     start_time: float     # time.monotonic()
     writer: Any           # WebVTTWriter (per-session)
-    adapter: Any = None   # YouTubeAdapter — set after CDN resolve
+    adapter: Any = None   # input adapter / EgressPipeline — set after start
     pipeline: Any = None  # ASRPipeline — set after backend starts
+    sed: Any = None       # SoundEventDetector — non-speech audio captioner (optional)
+    injector: Any = None  # CaptionInjector — set for 'relay' (RTMP egress) sessions
+    dest: str = ''        # egress RTMP destination (relay sessions only)
     recent_cues: Deque = field(default_factory=lambda: deque(maxlen=50))
     sse_clients: List = field(default_factory=list)
     sse_lock: threading.Lock = field(default_factory=threading.Lock)

@@ -166,7 +166,7 @@ class _Handler(BaseHTTPRequestHandler):
     _code_registry: Dict[str, str] = {}
     _code_lock: threading.Lock = None
 
-    start_callback: Optional[Callable[[str], str]] = None
+    start_callback: Optional[Callable[..., str]] = None
     stop_callback: Optional[Callable[[str], None]] = None
     metrics_provider: Optional[Callable[[], Dict]] = None
     gpu_provider: Optional[Callable[[], Dict]] = None
@@ -342,6 +342,7 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode(errors='replace')
         params = urllib.parse.parse_qs(body)
         url = params.get('url', [''])[0].strip()
+        dest = params.get('dest', [''])[0].strip()
 
         if not url:
             self._send_json({'error': 'no url provided'}, 400)
@@ -350,7 +351,7 @@ class _Handler(BaseHTTPRequestHandler):
         session_id = ''
         cb = _Handler.start_callback
         if cb:
-            session_id = cb(url)
+            session_id = cb(url, dest)
 
         self._send_json({
             'session_id': session_id,
@@ -746,7 +747,7 @@ class WebVTTServer:
 
     def __init__(self, config: dict,
                  auth_cfg: Optional[Dict] = None,
-                 start_callback: Optional[Callable[[str], str]] = None,
+                 start_callback: Optional[Callable[..., str]] = None,
                  stop_callback: Optional[Callable[[str], None]] = None,
                  metrics_provider: Optional[Callable[[], Dict]] = None,
                  gpu_provider: Optional[Callable[[], Dict]] = None,
